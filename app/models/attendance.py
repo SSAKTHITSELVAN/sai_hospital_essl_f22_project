@@ -1,4 +1,3 @@
-
 # app/models/attendance.py
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Date, Time, Enum, Float, Boolean
 from sqlalchemy.orm import relationship
@@ -33,6 +32,7 @@ class AttendanceStatus(enum.Enum):
     ABSENT = "absent"
     INCOMPLETE = "incomplete"  # Only IN or only OUT
     HALF_DAY = "half_day"
+    LOP = "lop"  # Loss of Pay - absent across all shifts
 
 
 class AttendanceLog(Base):
@@ -58,7 +58,7 @@ class ProcessedAttendance(Base):
     id = Column(Integer, primary_key=True, index=True)
     uid = Column(Integer, ForeignKey("users.uid"), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
-    shift = Column(Enum(ShiftType), nullable=False)
+    shift = Column(Enum(ShiftType), nullable=True)  # NULL for LOP records
     
     # Time tracking
     first_in = Column(DateTime, nullable=True)
@@ -81,4 +81,3 @@ class ProcessedAttendance(Base):
     
     # Relationships
     user = relationship("User", back_populates="processed_attendance")
-
