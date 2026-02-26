@@ -16,29 +16,23 @@ class DeviceSyncService:
     Service to synchronize data from ESSL F22 device
     Handles connection, data fetching, and error handling
     """
-    
+
     def __init__(self, db: Session):
         self.db = db
         self.device_ip = settings.DEVICE_IP
         self.device_port = settings.DEVICE_PORT
         self.timeout = settings.DEVICE_TIMEOUT
         self.zk = ZK(
-            self.device_ip, 
-            port=self.device_port, 
+            self.device_ip,
+            port=self.device_port,
             timeout=self.timeout,
             password=0,
             force_udp=False,
             ommit_ping=True
         )
         self.conn = None
-    
+
     def connect(self) -> bool:
-        """
-        Establish connection to the device
-        
-        Returns:
-            True if connected successfully, False otherwise
-        """
         try:
             print(f"🔌 Connecting to device {self.device_ip}:{self.device_port}...")
             self.conn = self.zk.connect()
@@ -49,9 +43,8 @@ class DeviceSyncService:
             print(f"❌ Connection failed: {e}")
             self._log_sync_status("failed", str(e))
             return False
-    
+
     def disconnect(self):
-        """Disconnect from device"""
         if self.conn:
             try:
                 self.conn.enable_device()
@@ -59,90 +52,141 @@ class DeviceSyncService:
                 print("✅ Device disconnected and re-enabled")
             except Exception as e:
                 print(f"⚠️ Error during disconnect: {e}")
-    
+
     def sync_users(self) -> Dict:
         """
-        Sync users from device to database
-        
-        Returns:
-            Dictionary with sync results
+        Sync users from device to database.
+
+        Rules:
+        - Match ONLY on uid (device slot number) — never on user_id_str or name.
+        - If uid exists on device AND in DB with same name → update fields only.
+        - If uid exists on device BUT DB row has a DIFFERENT name (uid reused by
+          new person) → retire the old row, create a fresh row for the new person.
+        - If uid exists on device but NOT in DB at all → create new row.
+        - If uid is in DB (active) but NOT on device → deactivate it.
+        - NEVER reactivate a retired/deleted row — if the old row is inactive and
+          the device sends the same uid with a different name, create a NEW row.
         """
         try:
-            users = self.conn.get_users()
-            added_count = 0
-            updated_count = 0
-            
-            for device_user in users:
+            device_users = self.conn.get_users()
+            device_uids  = {u.uid for u in device_users}
+
+            added_count       = 0
+            updated_count     = 0
+            deactivated_count = 0
+            retired_count     = 0
+
+            for device_user in device_users:
+                # Find ANY existing row for this uid (active or not)
                 existing = self.db.query(User).filter(
                     User.uid == device_user.uid
                 ).first()
-                
+
                 if existing:
-                    # Update existing user
-                    existing.name = device_user.name
-                    existing.privilege = device_user.privilege
-                    existing.password = device_user.password
-                    existing.group_id = device_user.group_id
-                    existing.user_id_str = device_user.user_id
-                    existing.card_no = str(device_user.card) if device_user.card else None
-                    existing.updated_at = datetime.utcnow()
-                    updated_count += 1
+                    # ── Same uid, same person (names match) ──────────────── #
+                    if existing.name.strip().lower() == device_user.name.strip().lower():
+                        # Just update fields, always keep active
+                        existing.privilege    = device_user.privilege
+                        existing.password     = device_user.password
+                        existing.group_id     = device_user.group_id
+                        existing.user_id_str  = str(device_user.user_id)
+                        existing.card_no      = str(device_user.card) if device_user.card else None
+                        existing.is_active    = True
+                        existing.updated_at   = datetime.utcnow()
+                        updated_count += 1
+                        print(f"✅ Updated UID {device_user.uid} — {device_user.name}")
+
+                    else:
+                        # ── Same uid, DIFFERENT person — uid was reused ───── #
+                        # Retire the old row permanently (prefix name so it's
+                        # obvious and never accidentally reactivated)
+                        old_name = existing.name
+                        existing.is_active  = False
+                        existing.name       = f"[RETIRED] {existing.name}"
+                        existing.updated_at = datetime.utcnow()
+                        retired_count += 1
+                        print(f"⚠️  Retired old UID {device_user.uid} ({old_name}) — reused by {device_user.name}")
+
+                        # Create a fresh row for the new person at this uid
+                        new_user = User(
+                            uid          = device_user.uid,
+                            name         = device_user.name,
+                            privilege    = device_user.privilege,
+                            password     = device_user.password,
+                            group_id     = device_user.group_id,
+                            user_id_str  = str(device_user.user_id),
+                            card_no      = str(device_user.card) if device_user.card else None,
+                            is_active    = True,
+                        )
+                        self.db.add(new_user)
+                        added_count += 1
+                        print(f"✅ Created new row for UID {device_user.uid} — {device_user.name}")
+
                 else:
-                    # Create new user
+                    # ── uid not in DB at all → create ────────────────────── #
                     new_user = User(
-                        uid=device_user.uid,
-                        name=device_user.name,
-                        privilege=device_user.privilege,
-                        password=device_user.password,
-                        group_id=device_user.group_id,
-                        user_id_str=device_user.user_id,
-                        card_no=str(device_user.card) if device_user.card else None
+                        uid          = device_user.uid,
+                        name         = device_user.name,
+                        privilege    = device_user.privilege,
+                        password     = device_user.password,
+                        group_id     = device_user.group_id,
+                        user_id_str  = str(device_user.user_id),
+                        card_no      = str(device_user.card) if device_user.card else None,
+                        is_active    = True,
                     )
                     self.db.add(new_user)
                     added_count += 1
-            
+                    print(f"➕ Added new UID {device_user.uid} — {device_user.name}")
+
+            # ── Deactivate DB users whose uid is no longer on device ──── #
+            active_db_users = self.db.query(User).filter(User.is_active == True).all()
+            for db_user in active_db_users:
+                if db_user.uid not in device_uids:
+                    db_user.is_active  = False
+                    db_user.updated_at = datetime.utcnow()
+                    deactivated_count += 1
+                    print(f"🗑️  Deactivated UID {db_user.uid} ({db_user.name}) — removed from device")
+
             self.db.commit()
-            
+
             result = {
-                "total": len(users),
-                "added": added_count,
-                "updated": updated_count
+                "total":       len(device_users),
+                "added":       added_count,
+                "updated":     updated_count,
+                "retired":     retired_count,
+                "deactivated": deactivated_count,
             }
-            
-            print(f"👥 Users synced - Total: {len(users)}, Added: {added_count}, Updated: {updated_count}")
+
+            print(
+                f"\n👥 Users synced — Device: {len(device_users)}, "
+                f"Added: {added_count}, Updated: {updated_count}, "
+                f"Retired: {retired_count}, Deactivated: {deactivated_count}"
+            )
             return result
-            
+
         except Exception as e:
             self.db.rollback()
             print(f"❌ Error syncing users: {e}")
             raise
-    
+
     def sync_attendance_logs(self) -> Dict:
-        """
-        Sync attendance logs from device to database
-        
-        Returns:
-            Dictionary with sync results
-        """
         try:
             logs = self.conn.get_attendance()
             new_count = 0
             duplicate_count = 0
             error_count = 0
-            
+
             for device_log in logs:
                 try:
-                    # Check if log already exists
                     existing = self.db.query(AttendanceLog).filter(
                         AttendanceLog.uid == device_log.user_id,
                         AttendanceLog.timestamp == device_log.timestamp
                     ).first()
-                    
+
                     if existing:
                         duplicate_count += 1
                         continue
-                    
-                    # Create new log
+
                     new_log = AttendanceLog(
                         uid=device_log.user_id,
                         timestamp=device_log.timestamp,
@@ -151,31 +195,30 @@ class DeviceSyncService:
                     )
                     self.db.add(new_log)
                     new_count += 1
-                    
+
                 except Exception as log_error:
                     print(f"⚠️ Error processing log: {log_error}")
                     error_count += 1
                     continue
-            
+
             self.db.commit()
-            
+
             result = {
                 "total": len(logs),
                 "new": new_count,
                 "duplicates": duplicate_count,
                 "errors": error_count
             }
-            
-            print(f"📋 Logs synced - Total: {len(logs)}, New: {new_count}, Duplicates: {duplicate_count}")
+
+            print(f"📋 Logs synced — Total: {len(logs)}, New: {new_count}, Duplicates: {duplicate_count}")
             return result
-            
+
         except Exception as e:
             self.db.rollback()
             print(f"❌ Error syncing attendance logs: {e}")
             raise
-    
+
     def get_device_info(self) -> Dict:
-        """Get device information"""
         try:
             return {
                 "ip": self.device_ip,
@@ -189,14 +232,8 @@ class DeviceSyncService:
         except Exception as e:
             print(f"❌ Error getting device info: {e}")
             return {}
-    
+
     def full_sync(self) -> Dict:
-        """
-        Perform full synchronization: users, logs, and process attendance
-        
-        Returns:
-            Dictionary with complete sync results
-        """
         result = {
             "status": "success",
             "timestamp": datetime.utcnow().isoformat(),
@@ -205,60 +242,51 @@ class DeviceSyncService:
             "processed_attendance": {},
             "device_info": {}
         }
-        
+
         try:
             if not self.connect():
                 result["status"] = "failed"
                 result["error"] = "Failed to connect to device"
                 return result
-            
-            # Get device info
+
             result["device_info"] = self.get_device_info()
-            
-            # Sync users
             result["users"] = self.sync_users()
-            
-            # Sync attendance logs
             result["logs"] = self.sync_attendance_logs()
-            
-            # Process attendance
+
             processor = AttendanceProcessor(self.db)
             result["processed_attendance"] = processor.process_all_pending()
-            
-            # Log successful sync
+
             self._log_sync_status("success", "Full sync completed successfully")
-            
             print("\n✅ Full synchronization completed successfully!")
-            
+
         except Exception as e:
             result["status"] = "failed"
             result["error"] = str(e)
             self._log_sync_status("failed", str(e))
             print(f"\n❌ Sync failed: {e}")
-        
+
         finally:
             self.disconnect()
-        
+
         return result
-    
+
     def _log_sync_status(self, status: str, message: str):
-        """Log sync status to device table"""
         try:
             device = self.db.query(Device).filter(
                 Device.device_ip == self.device_ip
             ).first()
-            
+
             if not device:
                 device = Device(
                     device_ip=self.device_ip,
                     device_port=self.device_port
                 )
                 self.db.add(device)
-            
+
             device.last_sync_at = datetime.utcnow()
             device.last_sync_status = status
             device.last_sync_message = message
-            
+
             self.db.commit()
         except Exception as e:
             print(f"⚠️ Error logging sync status: {e}")

@@ -18,10 +18,10 @@ class Settings(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: str = "essl"
     DB_USER: str = "postgres"
-    DB_PASS: str = "password"
+    DB_PASS: str = "0.00"
     
     # Device Configuration
-    DEVICE_IP: str = "10.215.111.231"
+    DEVICE_IP: str = "192.168.1.201"
     DEVICE_PORT: int = 4370
     DEVICE_TIMEOUT: int = 30
     

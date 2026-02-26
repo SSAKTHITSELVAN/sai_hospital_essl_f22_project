@@ -1,7 +1,11 @@
+
+
+
 // frontend/src/components/Layout.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { logout } from '../utils/auth';
+import api from '../services/api';
 import {
   LayoutDashboard,
   Users,
@@ -11,11 +15,19 @@ import {
   LogOut,
   Menu,
   X,
-  Bell
+  Wifi,
+  WifiOff,
+  RefreshCw
 } from 'lucide-react';
 
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [deviceStatus, setDeviceStatus] = useState({
+    online: false,
+    loading: true,
+    info: null,
+    lastChecked: null
+  });
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -31,6 +43,61 @@ export default function Layout({ children }) {
     { path: '/payroll', icon: DollarSign, label: 'Payroll' },
     { path: '/reports', icon: FileText, label: 'Reports' },
   ];
+
+  // Check device status
+  const checkDeviceStatus = async () => {
+    try {
+      setDeviceStatus(prev => ({ ...prev, loading: true }));
+      
+      const response = await api.get('/api/v1/device/info');
+      
+      if (response.data.status === 'success' && response.data.data) {
+        setDeviceStatus({
+          online: true,
+          loading: false,
+          info: response.data.data,
+          lastChecked: new Date()
+        });
+      } else {
+        setDeviceStatus({
+          online: false,
+          loading: false,
+          info: null,
+          lastChecked: new Date()
+        });
+      }
+    } catch (error) {
+      console.error('Device status check failed:', error);
+      setDeviceStatus({
+        online: false,
+        loading: false,
+        info: null,
+        lastChecked: new Date()
+      });
+    }
+  };
+
+  // Check device status on mount and every 30 seconds
+  useEffect(() => {
+    checkDeviceStatus();
+    
+    const interval = setInterval(() => {
+      checkDeviceStatus();
+    }, 30000); // Check every 30 seconds
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const formatLastChecked = () => {
+    if (!deviceStatus.lastChecked) return '';
+    
+    const now = new Date();
+    const diff = Math.floor((now - deviceStatus.lastChecked) / 1000);
+    
+    if (diff < 60) return 'Just now';
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    return `${Math.floor(diff / 3600)}h ago`;
+  };
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -61,6 +128,55 @@ export default function Layout({ children }) {
             );
           })}
         </nav>
+
+        {/* Device Status in Sidebar */}
+        <div className="absolute bottom-16 left-0 right-0 p-4 border-t">
+          <div className="bg-gray-50 rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-gray-600">Device Status</span>
+              <button
+                onClick={checkDeviceStatus}
+                disabled={deviceStatus.loading}
+                className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                title="Refresh status"
+              >
+                <RefreshCw className={`w-3 h-3 ${deviceStatus.loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+            
+            <div className="flex items-center space-x-2">
+              {deviceStatus.loading ? (
+                <>
+                  <div className="w-2 h-2 bg-gray-400 rounded-full animate-pulse" />
+                  <span className="text-xs text-gray-500">Checking...</span>
+                </>
+              ) : deviceStatus.online ? (
+                <>
+                  <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  <span className="text-xs text-green-600 font-medium">Online</span>
+                </>
+              ) : (
+                <>
+                  <div className="w-2 h-2 bg-red-500 rounded-full" />
+                  <span className="text-xs text-red-600 font-medium">Offline</span>
+                </>
+              )}
+            </div>
+            
+            {deviceStatus.info && (
+              <div className="mt-2 text-xs text-gray-500">
+                <div className="truncate">IP: {deviceStatus.info.ip || 'N/A'}</div>
+                <div className="truncate">SN: {deviceStatus.info.serial_number || 'N/A'}</div>
+              </div>
+            )}
+            
+            {deviceStatus.lastChecked && (
+              <div className="mt-1 text-xs text-gray-400">
+                {formatLastChecked()}
+              </div>
+            )}
+          </div>
+        </div>
 
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t">
           <button
@@ -110,6 +226,54 @@ export default function Layout({ children }) {
               })}
             </nav>
 
+            {/* Device Status in Mobile Sidebar */}
+            <div className="absolute bottom-16 left-0 right-0 p-4 border-t">
+              <div className="bg-gray-50 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-medium text-gray-600">Device Status</span>
+                  <button
+                    onClick={checkDeviceStatus}
+                    disabled={deviceStatus.loading}
+                    className="text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${deviceStatus.loading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+                
+                <div className="flex items-center space-x-2">
+                  {deviceStatus.loading ? (
+                    <>
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-pulse" />
+                      <span className="text-xs text-gray-500">Checking...</span>
+                    </>
+                  ) : deviceStatus.online ? (
+                    <>
+                      <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                      <span className="text-xs text-green-600 font-medium">Online</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="w-2 h-2 bg-red-500 rounded-full" />
+                      <span className="text-xs text-red-600 font-medium">Offline</span>
+                    </>
+                  )}
+                </div>
+                
+                {deviceStatus.info && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    <div className="truncate">IP: {deviceStatus.info.ip || 'N/A'}</div>
+                    <div className="truncate">SN: {deviceStatus.info.serial_number || 'N/A'}</div>
+                  </div>
+                )}
+                
+                {deviceStatus.lastChecked && (
+                  <div className="mt-1 text-xs text-gray-400">
+                    {formatLastChecked()}
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="absolute bottom-0 left-0 right-0 p-4 border-t">
               <button
                 onClick={handleLogout}
@@ -142,10 +306,35 @@ export default function Layout({ children }) {
             </div>
 
             <div className="flex items-center space-x-4">
-              <button className="relative p-2 text-gray-600 hover:bg-gray-100 rounded-lg">
-                <Bell className="w-6 h-6" />
-                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-              </button>
+              {/* Device Status Indicator in Header (for desktop) */}
+              <div className="hidden lg:flex items-center space-x-2 px-3 py-2 bg-gray-50 rounded-lg">
+                {deviceStatus.loading ? (
+                  <>
+                    <div className="w-2 h-2 bg-gray-400 rounded-full animate-pulse" />
+                    <span className="text-sm text-gray-500">Checking...</span>
+                  </>
+                ) : deviceStatus.online ? (
+                  <>
+                    <Wifi className="w-4 h-4 text-green-600" />
+                    <span className="text-sm text-green-600 font-medium">Device Online</span>
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="w-4 h-4 text-red-600" />
+                    <span className="text-sm text-red-600 font-medium">Device Offline</span>
+                  </>
+                )}
+                <button
+                  onClick={checkDeviceStatus}
+                  disabled={deviceStatus.loading}
+                  className="ml-2 text-gray-400 hover:text-gray-600 disabled:opacity-50"
+                  title="Refresh status"
+                >
+                  <RefreshCw className={`w-4 h-4 ${deviceStatus.loading ? 'animate-spin' : ''}`} />
+                </button>
+              </div>
+
+              {/* User Profile */}
               <div className="flex items-center space-x-3">
                 <div className="w-8 h-8 bg-indigo-600 rounded-full flex items-center justify-center text-white font-semibold">
                   A

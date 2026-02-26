@@ -470,3 +470,5 @@ Download
   "error": null
 }
 =========
+https://gemini.google.com/share/60552d537b0f
+-- for scheduling - in windows in gemini
