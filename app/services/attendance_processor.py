@@ -1,131 +1,323 @@
 # app/services/attendance_processor.py
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, func
+"""
+Flexible 24-hour attendance processor.
+
+Business Rules
+──────────────
+1.  A "logical work-day" is defined by DAY_START_TIME in .env.
+    e.g. DAY_START_TIME=04:00 → day runs 04:00 today to 03:59 next day.
+    Punches are queried by CALENDAR date (the date column on AttendanceLogs),
+    but cross-midnight work is handled correctly because we always compare
+    datetimes, not times.
+
+2.  Maximum 2 sessions per day:
+      Session 1  —  first IN  → first OUT
+      Session 2  —  second IN → second OUT   (optional, "Break Shift")
+    There is no fixed break duration.  An employee may work 3 h in the
+    morning and 6 h in the evening, or 9 h non-stop.  Both are fine.
+
+3.  Illiterate employees / accidental duplicate taps:
+    An employee might tap the same finger twice in a row (double-IN or
+    double-OUT).  Rule: KEEP THE LAST duplicate, discard earlier ones.
+    This is applied before session pairing in Mode A and Mode B.
+
+4.  Punch modes:
+    Mode A — device sends 0 = IN, non-0 = OUT (proper alternation).
+    Mode B — F22 quirk: every punch arrives as type 0.
+              Interpret by ordinal position: 1st=IN, 2nd=OUT, 3rd=IN, 4th=OUT.
+              5+ punches: treat first 2 as session 1, rest collapse to
+              session 2 (IN=3rd punch, OUT=last punch).
+
+5.  Missing checkout:
+    ANY unclosed session always gets OUT = last recorded timestamp of the day.
+    Remark is added: "Checkout inferred from last punch (HH:MM)".
+
+6.  Status thresholds:
+      total_hours >= PRESENT_HOURS  → present (or present_ot if OT > 0)
+      total_hours >= HALF_DAY_HOURS → half_day
+      total_hours >  0              → incomplete
+      no punches                    → absent
+"""
+
+import json
 from datetime import datetime, date, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
+
+from sqlalchemy import and_, func
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
 from app.models.attendance import (
     AttendanceLog,
     ProcessedAttendance,
-    ShiftType,
-    AttendanceStatus
+    AttendanceStatus,
 )
-from app.models.user import User
-from app.services.shift_detector import ShiftDetector
 
+settings   = get_settings()
+MAX_SESS   = 2   # hard cap — never more than 2 sessions per day
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+#  Internal helpers                                                            #
+# ═══════════════════════════════════════════════════════════════════════════ #
+
+def _dedup_consecutive(timestamps: List[datetime]) -> Tuple[List[datetime], List[str]]:
+    """
+    Remove consecutive duplicate taps (illiterate-employee protection).
+
+    Algorithm:
+      Walk the sorted timestamp list and track the "expected" next direction
+      (IN or OUT, alternating).  If the same direction appears twice in a row,
+      DISCARD the earlier one and keep the later one.  Collect a remark for
+      every discarded punch.
+
+    Returns:
+      cleaned  — deduplicated list of timestamps (max 4: IN OUT IN OUT)
+      remarks  — list of human-readable notes about what was discarded
+    """
+    remarks: List[str] = []
+    cleaned: List[datetime] = []
+
+    # We process in pairs: odd positions = IN, even positions = OUT
+    # Build groups of consecutive same-direction punches first.
+    # Since Mode B is all-0, "direction" is determined by position parity.
+    # For Mode A we do the same but use punch_type later.
+    # Here we only handle the TIMESTAMP list (direction already resolved).
+    # Simply: if the next timestamp would be same direction as previous,
+    # replace previous with the later one.
+
+    # We do a forward pass keeping track of last kept ts per slot.
+    # Slots: 0=IN1, 1=OUT1, 2=IN2, 3=OUT2
+    slots: List[Optional[datetime]] = [None, None, None, None]
+    slot  = 0
+
+    for ts in timestamps:
+        if slot >= 4:
+            # More than 4 punches: fold into last slot, keeping latest
+            prev = slots[3]
+            if prev is not None and ts > prev:
+                remarks.append(
+                    f"Extra punch at {ts.strftime('%H:%M')} collapsed into session-2 OUT"
+                )
+                slots[3] = ts
+            continue
+
+        if slots[slot] is None:
+            slots[slot] = ts
+        else:
+            # Duplicate in the same slot → keep the later timestamp
+            remarks.append(
+                f"Duplicate {'IN' if slot%2==0 else 'OUT'} at "
+                f"{slots[slot].strftime('%H:%M')}; "
+                f"replaced with {ts.strftime('%H:%M')}"
+            )
+            slots[slot] = ts
+            continue
+
+        slot += 1
+
+    cleaned = [s for s in slots if s is not None]
+    return cleaned, remarks
+
+
+def _pair_mode_a(
+    logs: List[AttendanceLog],
+    last_ts: datetime,
+) -> Tuple[List[Dict], List[str]]:
+    """
+    Mode A: device sends real punch_type (0=IN, non-0=OUT).
+
+    Consecutive same-type punches → keep the LAST one (discard earlier).
+    Returns (sessions, remarks).
+    """
+    remarks: List[str] = []
+    # Walk logs, deduplicate consecutive same-direction punches
+    clean_logs: List[AttendanceLog] = []
+    for log in logs:
+        if clean_logs and (log.punch_type == 0) == (clean_logs[-1].punch_type == 0):
+            # Same direction as previous → discard previous, keep this (later) one
+            direction = "IN" if log.punch_type == 0 else "OUT"
+            remarks.append(
+                f"Duplicate {direction} at {clean_logs[-1].timestamp.strftime('%H:%M')}; "
+                f"replaced by {log.timestamp.strftime('%H:%M')}"
+            )
+            clean_logs[-1] = log
+        else:
+            clean_logs.append(log)
+
+    # Now pair IN→OUT
+    sessions: List[Dict] = []
+    current_in: Optional[datetime] = None
+
+    for log in clean_logs:
+        if log.punch_type == 0:      # IN
+            if current_in is None:
+                current_in = log.timestamp
+        else:                        # OUT
+            if current_in is not None:
+                sessions.append({"in": current_in, "out": log.timestamp})
+                current_in = None
+            # OUT without prior IN → ignore
+
+    # Unclosed session
+    if current_in is not None:
+        remarks.append(f"Checkout inferred from last punch ({last_ts.strftime('%H:%M')})")
+        sessions.append({"in": current_in, "out": last_ts})
+
+    return sessions[:MAX_SESS], remarks
+
+
+def _pair_mode_b(
+    timestamps: List[datetime],
+    last_ts: datetime,
+) -> Tuple[List[Dict], List[str]]:
+    """
+    Mode B: F22 sends all punches as type-0.
+    Interpret by ordinal: 1st=IN, 2nd=OUT, 3rd=IN, 4th=OUT.
+    Extra punches (5+): collapse into session-2 OUT = last timestamp.
+
+    Deduplication: consecutive same-slot taps (e.g. two accidental IN taps)
+    → keep the LAST one and add a remark.
+    """
+    clean, remarks = _dedup_consecutive(timestamps)
+    n = len(clean)
+
+    sessions: List[Dict] = []
+
+    if n == 1:
+        # Single punch, no OUT → 0-hour record; infer OUT = that same punch
+        remarks.append(f"Only one punch ({clean[0].strftime('%H:%M')}); checkout inferred")
+        sessions = [{"in": clean[0], "out": clean[0]}]
+
+    elif n == 2:
+        sessions = [{"in": clean[0], "out": clean[1]}]
+
+    elif n == 3:
+        # Session 1: clean[0] → clean[1]
+        # Session 2: clean[2] → last_ts (inferred OUT)
+        remarks.append(f"Checkout inferred from last punch ({last_ts.strftime('%H:%M')})")
+        sessions = [
+            {"in": clean[0], "out": clean[1]},
+            {"in": clean[2], "out": last_ts},
+        ]
+
+    else:
+        # n >= 4: two proper sessions
+        sessions = [
+            {"in": clean[0], "out": clean[1]},
+            {"in": clean[2], "out": clean[3]},
+        ]
+
+    return sessions, remarks
+
+
+def _total_hours(sessions: List[Dict]) -> float:
+    total = 0.0
+    for s in sessions:
+        if s["in"] and s["out"] and s["out"] > s["in"]:
+            total += (s["out"] - s["in"]).total_seconds() / 3600
+    return round(total, 2)
+
+
+def _determine_status(hours: float, has_punches: bool) -> AttendanceStatus:
+    if not has_punches:
+        return AttendanceStatus.ABSENT
+    if hours <= 0:
+        return AttendanceStatus.INCOMPLETE
+    if hours >= settings.PRESENT_HOURS:
+        return AttendanceStatus.PRESENT   # OT flag added later
+    if hours >= settings.HALF_DAY_HOURS:
+        return AttendanceStatus.HALF_DAY
+    return AttendanceStatus.INCOMPLETE
+
+
+# ═══════════════════════════════════════════════════════════════════════════ #
+#  Main processor class                                                        #
+# ═══════════════════════════════════════════════════════════════════════════ #
 
 class AttendanceProcessor:
-    """
-    Processes raw attendance logs into meaningful attendance records.
-    Handles: shift detection, overtime, missing OUT punches, multiple punches.
-    """
 
     def __init__(self, db: Session):
         self.db = db
-        self.shift_detector = ShiftDetector()
+
+    # ── Per-day ─────────────────────────────────────────────────────────── #
 
     def process_daily_attendance(
         self,
         uid: int,
-        target_date: date
+        target_date: date,
     ) -> Optional[ProcessedAttendance]:
         """
-        Process all attendance logs for a user on a specific date.
-
-        Key behaviours:
-          - Shift is ALWAYS assigned from the first punch time. Never None.
-          - If the F22 device sends all punches as punch_type=0 (all-IN),
-            the last timestamp with a gap >= 1 hour is treated as checkout.
-          - Overtime = minutes worked past shift end, converted to hours.
+        Process all punches for `uid` on `target_date` (calendar date).
         """
-        logs = self.db.query(AttendanceLog).filter(
-            and_(
-                AttendanceLog.uid == uid,
-                func.date(AttendanceLog.timestamp) == target_date
+        logs = (
+            self.db.query(AttendanceLog)
+            .filter(
+                and_(
+                    AttendanceLog.uid == uid,
+                    func.date(AttendanceLog.timestamp) == target_date,
+                )
             )
-        ).order_by(AttendanceLog.timestamp).all()
+            .order_by(AttendanceLog.timestamp)
+            .all()
+        )
 
         if not logs:
             return None
 
-        # ── Always assign a shift from the first punch ────────────────── #
-        shift = self.shift_detector.detect_shift(logs[0].timestamp)
-        if shift is None:
-            shift = ShiftType.G  # ultimate fallback - should not happen
+        sorted_ts = [l.timestamp for l in logs]
+        last_ts   = sorted_ts[-1]
 
-        # ── Classify punches ──────────────────────────────────────────── #
-        in_punches  = [l.timestamp for l in logs if l.punch_type == 0]
-        out_punches = [l.timestamp for l in logs if l.punch_type == 1]
+        all_in_mode = all(l.punch_type == 0 for l in logs)
 
-        first_in = min(in_punches)  if in_punches  else None
-        last_out = max(out_punches) if out_punches  else None
-
-        # F22 fallback: device sends everything as punch_type=0
-        # If we have 2+ IN punches and zero OUT punches, and gap >= 1 hour,
-        # treat last IN as checkout.
-        inferred_out = False
-        if in_punches and not out_punches and len(in_punches) >= 2:
-            sorted_ins = sorted(in_punches)
-            gap_hours = (sorted_ins[-1] - sorted_ins[0]).total_seconds() / 3600
-            if gap_hours >= 1.0:
-                first_in    = sorted_ins[0]
-                last_out    = sorted_ins[-1]
-                inferred_out = True
-
-        # ── Work duration ─────────────────────────────────────────────── #
-        work_duration = None
-        if first_in and last_out:
-            work_duration = self.shift_detector.calculate_work_duration(first_in, last_out)
-
-        # ── Overtime ──────────────────────────────────────────────────── #
-        overtime_hours = 0.0
-        if last_out and shift:
-            overtime_hours = self._calculate_overtime(last_out, shift, target_date)
-
-        # ── Status / lateness / early-leave ───────────────────────────── #
-        status   = self._determine_status(first_in, last_out, shift, work_duration)
-        is_late  = False
-        late_by  = 0
-        is_early = False
-        early_by = 0
-        remarks  = []
-
-        if first_in:
-            is_late, late_by = self.shift_detector.calculate_late_minutes(first_in, shift)
+        if all_in_mode:
+            sessions, remarks = _pair_mode_b(sorted_ts, last_ts)
         else:
-            remarks.append("Missing check-in punch")
+            sessions, remarks = _pair_mode_a(logs, last_ts)
 
-        if last_out:
-            is_early, early_by = self.shift_detector.calculate_early_leave_minutes(last_out, shift)
-        else:
-            remarks.append("Missing check-out punch")
+        total_hrs = _total_hours(sessions)
+        ot_hours  = round(max(0.0, total_hrs - settings.PRESENT_HOURS), 2)
+        status    = _determine_status(total_hrs, has_punches=True)
 
-        if inferred_out:
-            remarks.append("Checkout inferred from last punch")
+        if status == AttendanceStatus.PRESENT and ot_hours > 0:
+            status = AttendanceStatus.PRESENT_OT
 
-        if overtime_hours > 0:
-            remarks.append(f"Overtime: {overtime_hours:.2f}h")
+        if ot_hours > 0:
+            remarks.append(f"OT: {ot_hours:.2f}h")
 
-        # ── Upsert ────────────────────────────────────────────────────── #
-        existing = self.db.query(ProcessedAttendance).filter(
-            and_(
-                ProcessedAttendance.uid   == uid,
-                ProcessedAttendance.date  == target_date,
-                ProcessedAttendance.shift == shift
-            )
-        ).first()
+        shift_label = "Break Shift" if len(sessions) == 2 else "Regular"
+
+        sessions_json = json.dumps([
+            {
+                "in":  s["in"].isoformat()  if s["in"]  else None,
+                "out": s["out"].isoformat() if s["out"] else None,
+            }
+            for s in sessions
+        ])
 
         fields = dict(
-            first_in               = first_in,
-            last_out               = last_out,
-            work_duration_hours    = work_duration,
-            overtime_hours         = overtime_hours,
+            punch_sessions         = sessions_json,
+            shift                  = shift_label,
+            first_in               = sessions[0]["in"]  if sessions else None,
+            last_out               = sessions[-1]["out"] if sessions else None,
+            work_duration_hours    = total_hrs,
+            overtime_hours         = ot_hours,
             status                 = status,
-            is_late                = is_late,
-            is_early_leave         = is_early,
-            late_by_minutes        = late_by,
-            early_leave_by_minutes = early_by,
             total_punches          = len(logs),
             remarks                = "; ".join(remarks) if remarks else None,
+            is_late                = False,
+            is_early_leave         = False,
+            late_by_minutes        = 0,
+            early_leave_by_minutes = 0,
+        )
+
+        existing = (
+            self.db.query(ProcessedAttendance)
+            .filter(
+                ProcessedAttendance.uid  == uid,
+                ProcessedAttendance.date == target_date,
+            )
+            .first()
         )
 
         if existing:
@@ -136,107 +328,61 @@ class AttendanceProcessor:
             self.db.refresh(existing)
             return existing
 
-        processed = ProcessedAttendance(uid=uid, date=target_date, shift=shift, **fields)
-        self.db.add(processed)
+        record = ProcessedAttendance(uid=uid, date=target_date, **fields)
+        self.db.add(record)
         self.db.commit()
-        self.db.refresh(processed)
-        return processed
+        self.db.refresh(record)
+        return record
 
-    # ------------------------------------------------------------------ #
-    #  Private helpers                                                     #
-    # ------------------------------------------------------------------ #
+    # ── Bulk helpers ─────────────────────────────────────────────────────── #
 
-    def _calculate_overtime(
-        self,
-        last_out: datetime,
-        shift: ShiftType,
-        work_date: date
-    ) -> float:
-        """Returns overtime hours beyond shift end. 0 if left before shift end."""
-        shift_data  = self.shift_detector.shifts[shift.value]
-        shift_start = shift_data["start"]
-        shift_end   = shift_data["end"]
-
-        # Night shift end is next calendar day
-        if shift_start > shift_end:
-            shift_end_dt = datetime.combine(work_date + timedelta(days=1), shift_end)
-        else:
-            shift_end_dt = datetime.combine(work_date, shift_end)
-
-        seconds = (last_out - shift_end_dt).total_seconds()
-        return round(seconds / 3600, 2) if seconds > 0 else 0.0
-
-    def _determine_status(
-        self,
-        first_in: Optional[datetime],
-        last_out: Optional[datetime],
-        shift: ShiftType,
-        work_duration: Optional[float]
-    ) -> AttendanceStatus:
-        if not first_in and not last_out:
-            return AttendanceStatus.ABSENT
-        if not first_in or not last_out:
-            return AttendanceStatus.INCOMPLETE
-
-        if work_duration is not None:
-            expected = self.shift_detector.get_expected_shift_hours(shift)
-            if work_duration < 4 or work_duration < (expected / 2):
-                return AttendanceStatus.HALF_DAY
-
-        is_late,  _ = self.shift_detector.calculate_late_minutes(first_in, shift)
-        is_early, _ = self.shift_detector.calculate_early_leave_minutes(last_out, shift)
-
-        if is_late:
-            return AttendanceStatus.LATE
-        if is_early:
-            return AttendanceStatus.EARLY_LEAVE
-        return AttendanceStatus.PRESENT
-
-    # ------------------------------------------------------------------ #
-    #  Public bulk helpers                                                 #
-    # ------------------------------------------------------------------ #
-
-    def process_all_pending(self) -> Dict[str, int]:
-        pending = self.db.query(
-            AttendanceLog.uid,
-            func.date(AttendanceLog.timestamp).label("log_date")
-        ).distinct().all()
-
-        processed_count = 0
-        error_count     = 0
+    def process_all_pending(self) -> Dict:
+        pending = (
+            self.db.query(
+                AttendanceLog.uid,
+                func.date(AttendanceLog.timestamp).label("log_date"),
+            )
+            .distinct()
+            .all()
+        )
+        ok = err = 0
         for uid, log_date in pending:
             try:
                 self.process_daily_attendance(uid, log_date)
-                processed_count += 1
+                ok += 1
             except Exception as e:
-                print(f"Error processing UID {uid} on {log_date}: {e}")
-                error_count += 1
+                print(f"Error UID {uid} on {log_date}: {e}")
+                err += 1
+        return {"processed": ok, "errors": err, "total": len(pending)}
 
-        return {"processed": processed_count, "errors": error_count, "total": len(pending)}
-
-    def process_date_range(self, uid: int, start_date: date, end_date: date):
-        results, current = [], start_date
-        while current <= end_date:
+    def process_date_range(self, uid: int, start: date, end: date):
+        results, current = [], start
+        while current <= end:
             rec = self.process_daily_attendance(uid, current)
             if rec:
                 results.append(rec)
             current += timedelta(days=1)
         return results
 
+    # ── Summary (used by attendance route & CSV export) ───────────────────── #
+
     def get_user_attendance_summary(
         self,
         uid: int,
         start_date: date,
         end_date: date,
-        detailed: bool = False
+        detailed: bool = False,
     ) -> Dict:
-        records = self.db.query(ProcessedAttendance).filter(
-            and_(
+        records = (
+            self.db.query(ProcessedAttendance)
+            .filter(
                 ProcessedAttendance.uid  == uid,
                 ProcessedAttendance.date >= start_date,
-                ProcessedAttendance.date <= end_date
+                ProcessedAttendance.date <= end_date,
             )
-        ).order_by(ProcessedAttendance.date.asc()).all()
+            .order_by(ProcessedAttendance.date.asc())
+            .all()
+        )
 
         total_days  = len(records)
         total_hours = sum(r.work_duration_hours or 0 for r in records)
@@ -248,36 +394,43 @@ class AttendanceProcessor:
             "summary": {
                 "total_days":            total_days,
                 "present":               sum(1 for r in records if r.status == AttendanceStatus.PRESENT),
-                "late":                  sum(1 for r in records if r.status == AttendanceStatus.LATE),
-                "early_leave":           sum(1 for r in records if r.status == AttendanceStatus.EARLY_LEAVE),
+                "present_ot":            sum(1 for r in records if r.status == AttendanceStatus.PRESENT_OT),
                 "half_day":              sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY),
                 "incomplete":            sum(1 for r in records if r.status == AttendanceStatus.INCOMPLETE),
+                "absent":                sum(1 for r in records if r.status == AttendanceStatus.ABSENT),
+                "lop":                   sum(1 for r in records if r.status == AttendanceStatus.LOP),
                 "total_hours_worked":    round(total_hours, 2),
                 "total_overtime_hours":  round(total_ot, 2),
                 "average_hours_per_day": round(total_hours / total_days, 2) if total_days else 0,
-            }
+            },
         }
 
         if detailed:
             from collections import OrderedDict
             months: dict = OrderedDict()
+
             for r in records:
                 key = r.date.strftime("%Y-%m")
+                sessions_raw = []
+                if r.punch_sessions:
+                    try:
+                        sessions_raw = json.loads(r.punch_sessions)
+                    except Exception:
+                        pass
+
                 entry = {
-                    "date":                   r.date.isoformat(),
-                    "shift":                  r.shift.value if r.shift else None,
-                    "status":                 r.status.value if r.status else None,
-                    "first_in":               r.first_in.isoformat()  if r.first_in  else None,
-                    "last_out":               r.last_out.isoformat()  if r.last_out  else None,
-                    "work_duration_hours":    r.work_duration_hours,
-                    "overtime_hours":         r.overtime_hours,
-                    "is_late":                r.is_late,
-                    "late_by_minutes":        r.late_by_minutes,
-                    "is_early_leave":         r.is_early_leave,
-                    "early_leave_by_minutes": r.early_leave_by_minutes,
-                    "total_punches":          r.total_punches,
-                    "remarks":                r.remarks,
+                    "date":                r.date.isoformat(),
+                    "sessions":            sessions_raw,
+                    "shift":               r.shift or "Regular",
+                    "first_in":            r.first_in.isoformat()  if r.first_in  else None,
+                    "last_out":            r.last_out.isoformat()  if r.last_out  else None,
+                    "work_duration_hours": r.work_duration_hours,
+                    "overtime_hours":      r.overtime_hours or 0,
+                    "status":              r.status.value if r.status else None,
+                    "total_punches":       r.total_punches,
+                    "remarks":             r.remarks,
                 }
+
                 if key not in months:
                     months[key] = {"month": key, "days": []}
                 months[key]["days"].append(entry)
@@ -286,9 +439,11 @@ class AttendanceProcessor:
                 days = m["days"]
                 m["month_summary"] = {
                     "total_days":           len(days),
-                    "present":              sum(1 for d in days if d["status"] == "present"),
-                    "late":                 sum(1 for d in days if d["status"] == "late"),
+                    "present":              sum(1 for d in days if d["status"] in ("present", "present_ot")),
+                    "present_ot":           sum(1 for d in days if d["status"] == "present_ot"),
+                    "half_day":             sum(1 for d in days if d["status"] == "half_day"),
                     "incomplete":           sum(1 for d in days if d["status"] == "incomplete"),
+                    "absent":               sum(1 for d in days if d["status"] == "absent"),
                     "total_hours_worked":   round(sum(d["work_duration_hours"] or 0 for d in days), 2),
                     "total_overtime_hours": round(sum(d["overtime_hours"]      or 0 for d in days), 2),
                 }
