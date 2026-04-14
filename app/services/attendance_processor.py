@@ -4,42 +4,42 @@ Flexible 24-hour attendance processor.
 
 Business Rules
 ──────────────
-1.  A "logical work-day" is defined by DAY_START_TIME in .env.
-    e.g. DAY_START_TIME=04:00 → day runs 04:00 today to 03:59 next day.
-    Punches are queried by CALENDAR date (the date column on AttendanceLogs),
-    but cross-midnight work is handled correctly because we always compare
-    datetimes, not times.
+1.  No fixed shifts.  Status is determined purely by total hours worked.
 
 2.  Maximum 2 sessions per day:
-      Session 1  —  first IN  → first OUT
-      Session 2  —  second IN → second OUT   (optional, "Break Shift")
-    There is no fixed break duration.  An employee may work 3 h in the
-    morning and 6 h in the evening, or 9 h non-stop.  Both are fine.
+      Regular:     1 IN + 1 OUT  (single continuous stretch)
+      Break Shift: 2 IN + 2 OUT  (e.g. morning + evening, any split)
+    No mandatory break duration.  Total = 9 h either way.
 
-3.  Illiterate employees / accidental duplicate taps:
-    An employee might tap the same finger twice in a row (double-IN or
-    double-OUT).  Rule: KEEP THE LAST duplicate, discard earlier ones.
-    This is applied before session pairing in Mode A and Mode B.
+3.  Illiterate / accidental duplicate taps:
+    If the same direction (IN or IN, OUT or OUT) appears consecutively,
+    DISCARD the earlier one, KEEP the later one, add a remark.
 
 4.  Punch modes:
-    Mode A — device sends 0 = IN, non-0 = OUT (proper alternation).
-    Mode B — F22 quirk: every punch arrives as type 0.
-              Interpret by ordinal position: 1st=IN, 2nd=OUT, 3rd=IN, 4th=OUT.
-              5+ punches: treat first 2 as session 1, rest collapse to
-              session 2 (IN=3rd punch, OUT=last punch).
+    Mode A — device sends 0=IN / non-0=OUT properly.
+    Mode B — F22 quirk: all punches arrive as type 0.
+              Interpret by ordinal: 1st=IN1, 2nd=OUT1, 3rd=IN2, 4th=OUT2.
+              5+ → session-2 OUT = last timestamp.
 
 5.  Missing checkout:
-    ANY unclosed session always gets OUT = last recorded timestamp of the day.
-    Remark is added: "Checkout inferred from last punch (HH:MM)".
+    Any unclosed session gets OUT = last timestamp of the day. Remark added.
 
-6.  Status thresholds:
-      total_hours >= PRESENT_HOURS  → present (or present_ot if OT > 0)
-      total_hours >= HALF_DAY_HOURS → half_day
-      total_hours >  0              → incomplete
-      no punches                    → absent
+6.  Status thresholds (from .env):
+      >= PRESENT_HOURS  → present (or present_ot if OT > 0)
+      >= HALF_DAY_HOURS → half_day
+      > 0               → incomplete
+      no punches        → absent
+
+7.  Smart skip (performance):
+    A processed record marked is_finalized=True is skipped unless new raw
+    punches have arrived after its updated_at timestamp.
+    A day is finalized when:
+      - There is a valid last_out  AND
+      - No new AttendanceLogs for that uid+date exist after updated_at.
 """
 
 import json
+import platform
 from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional, Tuple
 
@@ -53,72 +53,64 @@ from app.models.attendance import (
     AttendanceStatus,
 )
 
-settings   = get_settings()
-MAX_SESS   = 2   # hard cap — never more than 2 sessions per day
+settings = get_settings()
+MAX_SESS = 2
 
 
-# ═══════════════════════════════════════════════════════════════════════════ #
-#  Internal helpers                                                            #
-# ═══════════════════════════════════════════════════════════════════════════ #
+# ── Time formatting (cross-platform) ───────────────────────────────────────── #
 
-def _dedup_consecutive(timestamps: List[datetime]) -> Tuple[List[datetime], List[str]]:
+def _fmt_time(dt: datetime) -> str:
+    """Format datetime to '9:30 AM' on all platforms (Windows + Linux)."""
+    if platform.system() == "Windows":
+        # Windows doesn't support %-I; use %#I instead
+        return dt.strftime("%#I:%M %p")
+    return dt.strftime("%-I:%M %p")
+
+
+# ── Punch deduplication ────────────────────────────────────────────────────── #
+
+def _dedup_consecutive_mode_b(
+    timestamps: List[datetime],
+) -> Tuple[List[datetime], List[str]]:
     """
-    Remove consecutive duplicate taps (illiterate-employee protection).
-
-    Algorithm:
-      Walk the sorted timestamp list and track the "expected" next direction
-      (IN or OUT, alternating).  If the same direction appears twice in a row,
-      DISCARD the earlier one and keep the later one.  Collect a remark for
-      every discarded punch.
-
-    Returns:
-      cleaned  — deduplicated list of timestamps (max 4: IN OUT IN OUT)
-      remarks  — list of human-readable notes about what was discarded
+    For Mode B (all-IN device), deduplicate consecutive same-slot taps.
+    Slots: 0=IN1, 1=OUT1, 2=IN2, 3=OUT2.
+    If a slot receives more than one tap → keep the LAST one, add remark.
+    Any punches beyond slot 3 are collapsed into slot 3 (OUT2 = latest ts).
     """
     remarks: List[str] = []
-    cleaned: List[datetime] = []
-
-    # We process in pairs: odd positions = IN, even positions = OUT
-    # Build groups of consecutive same-direction punches first.
-    # Since Mode B is all-0, "direction" is determined by position parity.
-    # For Mode A we do the same but use punch_type later.
-    # Here we only handle the TIMESTAMP list (direction already resolved).
-    # Simply: if the next timestamp would be same direction as previous,
-    # replace previous with the later one.
-
-    # We do a forward pass keeping track of last kept ts per slot.
-    # Slots: 0=IN1, 1=OUT1, 2=IN2, 3=OUT2
     slots: List[Optional[datetime]] = [None, None, None, None]
-    slot  = 0
+    slot = 0
 
     for ts in timestamps:
         if slot >= 4:
-            # More than 4 punches: fold into last slot, keeping latest
-            prev = slots[3]
-            if prev is not None and ts > prev:
+            # Extra punch: collapse to last slot, keep latest
+            if slots[3] is not None and ts > slots[3]:
                 remarks.append(
-                    f"Extra punch at {ts.strftime('%H:%M')} collapsed into session-2 OUT"
+                    f"Extra punch at {_fmt_time(ts)} merged into Session-2 OUT"
                 )
                 slots[3] = ts
             continue
 
+        direction = "IN" if slot % 2 == 0 else "OUT"
+
         if slots[slot] is None:
             slots[slot] = ts
         else:
-            # Duplicate in the same slot → keep the later timestamp
+            # Duplicate in same slot → keep the later one
             remarks.append(
-                f"Duplicate {'IN' if slot%2==0 else 'OUT'} at "
-                f"{slots[slot].strftime('%H:%M')}; "
-                f"replaced with {ts.strftime('%H:%M')}"
+                f"Duplicate {direction} ({_fmt_time(slots[slot])}); "
+                f"replaced by {_fmt_time(ts)}"
             )
             slots[slot] = ts
-            continue
+            continue   # do NOT advance slot — still filling same slot
 
         slot += 1
 
-    cleaned = [s for s in slots if s is not None]
-    return cleaned, remarks
+    return [s for s in slots if s is not None], remarks
 
+
+# ── Mode A pairing ─────────────────────────────────────────────────────────── #
 
 def _pair_mode_a(
     logs: List[AttendanceLog],
@@ -126,90 +118,83 @@ def _pair_mode_a(
 ) -> Tuple[List[Dict], List[str]]:
     """
     Mode A: device sends real punch_type (0=IN, non-0=OUT).
-
-    Consecutive same-type punches → keep the LAST one (discard earlier).
-    Returns (sessions, remarks).
+    Consecutive same-direction taps → keep the LAST one.
     """
     remarks: List[str] = []
-    # Walk logs, deduplicate consecutive same-direction punches
-    clean_logs: List[AttendanceLog] = []
-    for log in logs:
-        if clean_logs and (log.punch_type == 0) == (clean_logs[-1].punch_type == 0):
-            # Same direction as previous → discard previous, keep this (later) one
-            direction = "IN" if log.punch_type == 0 else "OUT"
-            remarks.append(
-                f"Duplicate {direction} at {clean_logs[-1].timestamp.strftime('%H:%M')}; "
-                f"replaced by {log.timestamp.strftime('%H:%M')}"
-            )
-            clean_logs[-1] = log
-        else:
-            clean_logs.append(log)
+    clean: List[AttendanceLog] = []
 
-    # Now pair IN→OUT
+    for log in logs:
+        is_in = (log.punch_type == 0)
+        if clean:
+            prev_is_in = (clean[-1].punch_type == 0)
+            if is_in == prev_is_in:
+                direction = "IN" if is_in else "OUT"
+                remarks.append(
+                    f"Duplicate {direction} at {_fmt_time(clean[-1].timestamp)}; "
+                    f"replaced by {_fmt_time(log.timestamp)}"
+                )
+                clean[-1] = log   # replace with later tap
+                continue
+        clean.append(log)
+
     sessions: List[Dict] = []
     current_in: Optional[datetime] = None
 
-    for log in clean_logs:
-        if log.punch_type == 0:      # IN
+    for log in clean:
+        if log.punch_type == 0:
             if current_in is None:
                 current_in = log.timestamp
-        else:                        # OUT
+        else:
             if current_in is not None:
                 sessions.append({"in": current_in, "out": log.timestamp})
                 current_in = None
-            # OUT without prior IN → ignore
 
-    # Unclosed session
     if current_in is not None:
-        remarks.append(f"Checkout inferred from last punch ({last_ts.strftime('%H:%M')})")
+        remarks.append(f"Checkout inferred from last punch ({_fmt_time(last_ts)})")
         sessions.append({"in": current_in, "out": last_ts})
 
     return sessions[:MAX_SESS], remarks
 
+
+# ── Mode B pairing ─────────────────────────────────────────────────────────── #
 
 def _pair_mode_b(
     timestamps: List[datetime],
     last_ts: datetime,
 ) -> Tuple[List[Dict], List[str]]:
     """
-    Mode B: F22 sends all punches as type-0.
-    Interpret by ordinal: 1st=IN, 2nd=OUT, 3rd=IN, 4th=OUT.
-    Extra punches (5+): collapse into session-2 OUT = last timestamp.
-
-    Deduplication: consecutive same-slot taps (e.g. two accidental IN taps)
-    → keep the LAST one and add a remark.
+    Mode B: F22 all-IN device.
+    Ordinal interpretation after deduplication:
+      1 punch  → IN only (0-hr incomplete)
+      2 punches → Session 1: [0]→[1]
+      3 punches → Session 1: [0]→[1], Session 2: [2]→last_ts (inferred)
+      4 punches → Session 1: [0]→[1], Session 2: [2]→[3]
     """
-    clean, remarks = _dedup_consecutive(timestamps)
+    clean, remarks = _dedup_consecutive_mode_b(timestamps)
     n = len(clean)
 
-    sessions: List[Dict] = []
-
     if n == 1:
-        # Single punch, no OUT → 0-hour record; infer OUT = that same punch
-        remarks.append(f"Only one punch ({clean[0].strftime('%H:%M')}); checkout inferred")
-        sessions = [{"in": clean[0], "out": clean[0]}]
+        remarks.append(f"Only one punch ({_fmt_time(clean[0])}); no checkout recorded")
+        return [{"in": clean[0], "out": clean[0]}], remarks
 
-    elif n == 2:
-        sessions = [{"in": clean[0], "out": clean[1]}]
+    if n == 2:
+        return [{"in": clean[0], "out": clean[1]}], remarks
 
-    elif n == 3:
-        # Session 1: clean[0] → clean[1]
-        # Session 2: clean[2] → last_ts (inferred OUT)
-        remarks.append(f"Checkout inferred from last punch ({last_ts.strftime('%H:%M')})")
-        sessions = [
+    if n == 3:
+        remarks.append(f"Checkout inferred from last punch ({_fmt_time(last_ts)})")
+        return [
             {"in": clean[0], "out": clean[1]},
             {"in": clean[2], "out": last_ts},
-        ]
+        ], remarks
 
-    else:
-        # n >= 4: two proper sessions
-        sessions = [
-            {"in": clean[0], "out": clean[1]},
-            {"in": clean[2], "out": clean[3]},
-        ]
+    # n >= 4
+    return [
+        {"in": clean[0], "out": clean[1]},
+        {"in": clean[2], "out": clean[3]},
+    ], remarks
 
-    return sessions, remarks
 
+# ── Helpers ────────────────────────────────────────────────────────────────── #
 
 def _total_hours(sessions: List[Dict]) -> float:
     total = 0.0
@@ -219,20 +204,32 @@ def _total_hours(sessions: List[Dict]) -> float:
     return round(total, 2)
 
 
-def _determine_status(hours: float, has_punches: bool) -> AttendanceStatus:
-    if not has_punches:
-        return AttendanceStatus.ABSENT
+def _determine_status(hours: float) -> AttendanceStatus:
     if hours <= 0:
         return AttendanceStatus.INCOMPLETE
     if hours >= settings.PRESENT_HOURS:
-        return AttendanceStatus.PRESENT   # OT flag added later
+        return AttendanceStatus.PRESENT
     if hours >= settings.HALF_DAY_HOURS:
         return AttendanceStatus.HALF_DAY
     return AttendanceStatus.INCOMPLETE
 
 
+def _has_new_punches(
+    db: Session,
+    uid: int,
+    target_date: date,
+    since: datetime,
+) -> bool:
+    """Return True if any AttendanceLog for uid+date was created after `since`."""
+    return db.query(AttendanceLog).filter(
+        AttendanceLog.uid == uid,
+        func.date(AttendanceLog.timestamp) == target_date,
+        AttendanceLog.created_at > since,
+    ).first() is not None
+
+
 # ═══════════════════════════════════════════════════════════════════════════ #
-#  Main processor class                                                        #
+#  Main processor                                                              #
 # ═══════════════════════════════════════════════════════════════════════════ #
 
 class AttendanceProcessor:
@@ -240,16 +237,31 @@ class AttendanceProcessor:
     def __init__(self, db: Session):
         self.db = db
 
-    # ── Per-day ─────────────────────────────────────────────────────────── #
-
     def process_daily_attendance(
         self,
         uid: int,
         target_date: date,
+        force: bool = False,
     ) -> Optional[ProcessedAttendance]:
         """
-        Process all punches for `uid` on `target_date` (calendar date).
+        Process all punches for uid on target_date.
+        If force=False (default), skips records already finalized with no new punches.
         """
+        # ── Smart skip: already finalized and no new raw punches ──────────── #
+        if not force:
+            existing = (
+                self.db.query(ProcessedAttendance)
+                .filter(
+                    ProcessedAttendance.uid  == uid,
+                    ProcessedAttendance.date == target_date,
+                )
+                .first()
+            )
+            if existing and existing.is_finalized:
+                if not _has_new_punches(self.db, uid, target_date, existing.updated_at):
+                    return existing   # nothing changed — skip
+
+        # ── Fetch raw logs ────────────────────────────────────────────────── #
         logs = (
             self.db.query(AttendanceLog)
             .filter(
@@ -268,17 +280,17 @@ class AttendanceProcessor:
         sorted_ts = [l.timestamp for l in logs]
         last_ts   = sorted_ts[-1]
 
+        # ── Pair punches ──────────────────────────────────────────────────── #
         all_in_mode = all(l.punch_type == 0 for l in logs)
-
         if all_in_mode:
             sessions, remarks = _pair_mode_b(sorted_ts, last_ts)
         else:
             sessions, remarks = _pair_mode_a(logs, last_ts)
 
+        # ── Calculate hours & status ──────────────────────────────────────── #
         total_hrs = _total_hours(sessions)
         ot_hours  = round(max(0.0, total_hrs - settings.PRESENT_HOURS), 2)
-        status    = _determine_status(total_hrs, has_punches=True)
-
+        status    = _determine_status(total_hrs)
         if status == AttendanceStatus.PRESENT and ot_hours > 0:
             status = AttendanceStatus.PRESENT_OT
 
@@ -287,6 +299,16 @@ class AttendanceProcessor:
 
         shift_label = "Break Shift" if len(sessions) == 2 else "Regular"
 
+        # ── Determine finalization ────────────────────────────────────────── #
+        # A day is finalized if every session has a real OUT
+        # (i.e. no checkout was inferred from the last punch — the
+        #  employee explicitly tapped out on the device).
+        inferred = any("Checkout inferred" in r or "Only one punch" in r for r in remarks)
+        today    = date.today()
+        # Also finalize past days even if inferred, since no more punches are coming
+        is_finalized = (not inferred) or (target_date < today)
+
+        # ── Serialize sessions ────────────────────────────────────────────── #
         sessions_json = json.dumps([
             {
                 "in":  s["in"].isoformat()  if s["in"]  else None,
@@ -305,12 +327,14 @@ class AttendanceProcessor:
             status                 = status,
             total_punches          = len(logs),
             remarks                = "; ".join(remarks) if remarks else None,
+            is_finalized           = is_finalized,
             is_late                = False,
             is_early_leave         = False,
             late_by_minutes        = 0,
             early_leave_by_minutes = 0,
         )
 
+        # ── Upsert ────────────────────────────────────────────────────────── #
         existing = (
             self.db.query(ProcessedAttendance)
             .filter(
@@ -334,10 +358,18 @@ class AttendanceProcessor:
         self.db.refresh(record)
         return record
 
-    # ── Bulk helpers ─────────────────────────────────────────────────────── #
+    # ── Bulk: only process what actually needs processing ─────────────────── #
 
     def process_all_pending(self) -> Dict:
-        pending = (
+        """
+        Process only uid+date combinations that either:
+          (a) have no ProcessedAttendance record yet, OR
+          (b) have a record that is NOT finalized, OR
+          (c) have new AttendanceLogs created after the record's updated_at.
+        This prevents re-processing every historical record on every sync.
+        """
+        # All distinct (uid, date) pairs that have raw logs
+        all_log_pairs = (
             self.db.query(
                 AttendanceLog.uid,
                 func.date(AttendanceLog.timestamp).label("log_date"),
@@ -345,18 +377,54 @@ class AttendanceProcessor:
             .distinct()
             .all()
         )
-        ok = err = 0
-        for uid, log_date in pending:
+
+        # Build lookup: (uid, date) → ProcessedAttendance for quick access
+        processed_lookup: Dict = {}
+        all_processed = self.db.query(ProcessedAttendance).all()
+        for p in all_processed:
+            processed_lookup[(p.uid, p.date)] = p
+
+        ok = skipped = err = 0
+        to_process = []
+
+        for uid, log_date in all_log_pairs:
+            p = processed_lookup.get((uid, log_date))
+
+            if p is None:
+                # Never processed — must process
+                to_process.append((uid, log_date))
+            elif not p.is_finalized:
+                # Not yet finalized (e.g. today's record still open)
+                to_process.append((uid, log_date))
+            elif _has_new_punches(self.db, uid, log_date, p.updated_at):
+                # Finalized but new punches arrived after last processing
+                to_process.append((uid, log_date))
+            else:
+                skipped += 1
+
+        for uid, log_date in to_process:
             try:
-                self.process_daily_attendance(uid, log_date)
+                self.process_daily_attendance(uid, log_date, force=True)
                 ok += 1
             except Exception as e:
-                print(f"Error UID {uid} on {log_date}: {e}")
+                print(f"❌ Error processing UID {uid} on {log_date}: {e}")
                 err += 1
-        return {"processed": ok, "errors": err, "total": len(pending)}
+
+        total = len(all_log_pairs)
+        print(
+            f"📊 Attendance processing — "
+            f"Total: {total}, Processed: {ok}, Skipped: {skipped}, Errors: {err}"
+        )
+        return {
+            "total":     total,
+            "processed": ok,
+            "skipped":   skipped,
+            "errors":    err,
+        }
 
     def process_date_range(self, uid: int, start: date, end: date):
-        results, current = [], start
+        results = []
+        current = start
         while current <= end:
             rec = self.process_daily_attendance(uid, current)
             if rec:
@@ -364,7 +432,7 @@ class AttendanceProcessor:
             current += timedelta(days=1)
         return results
 
-    # ── Summary (used by attendance route & CSV export) ───────────────────── #
+    # ── Summary ────────────────────────────────────────────────────────────── #
 
     def get_user_attendance_summary(
         self,
@@ -400,7 +468,7 @@ class AttendanceProcessor:
                 "absent":                sum(1 for r in records if r.status == AttendanceStatus.ABSENT),
                 "lop":                   sum(1 for r in records if r.status == AttendanceStatus.LOP),
                 "total_hours_worked":    round(total_hours, 2),
-                "total_overtime_hours":  round(total_ot, 2),
+                "total_overtime_hours":  round(total_ot,    2),
                 "average_hours_per_day": round(total_hours / total_days, 2) if total_days else 0,
             },
         }

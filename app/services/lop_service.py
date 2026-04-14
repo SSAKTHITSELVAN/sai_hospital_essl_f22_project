@@ -4,11 +4,17 @@ from sqlalchemy import and_
 from datetime import date, datetime, timedelta
 from typing import List, Dict, Optional
 
-from app.models.attendance import ProcessedAttendance, AttendanceStatus
+# ShiftType is no longer used — import only what exists in the updated model
+from app.models.attendance import (
+    AttendanceLog,
+    ProcessedAttendance,
+    AttendanceStatus,
+)
 from app.models.user import User
 
 
 class LOPService:
+    """Detect and mark Loss of Pay (LOP) for absent employees."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -16,20 +22,28 @@ class LOPService:
     def get_absentees_for_date(self, target_date: date) -> Dict:
         all_users = self.db.query(User).filter(User.is_active == True).all()
 
+        # Users who have ANY attendance record that is not absent/lop
         attended_uids = {
             r[0]
             for r in self.db.query(ProcessedAttendance.uid)
             .filter(
                 ProcessedAttendance.date   == target_date,
-                ProcessedAttendance.status != AttendanceStatus.LOP,
-                ProcessedAttendance.status != AttendanceStatus.ABSENT,
+                ProcessedAttendance.status.notin_([
+                    AttendanceStatus.ABSENT,
+                    AttendanceStatus.LOP,
+                ]),
             )
             .distinct()
             .all()
         }
 
         absentees = [
-            {"uid": u.uid, "name": u.name, "card_no": u.card_no, "date": target_date.isoformat()}
+            {
+                "uid":     u.uid,
+                "name":    u.name,
+                "card_no": u.card_no,
+                "date":    target_date.isoformat(),
+            }
             for u in all_users
             if u.uid not in attended_uids
         ]
@@ -50,36 +64,43 @@ class LOPService:
         exclude_uids  = exclude_uids or []
         absentee_data = self.get_absentees_for_date(target_date)
 
-        marked_count = skipped_count = 0
+        marked = skipped = 0
         errors = []
 
         for absentee in absentee_data["absentees"]:
             uid = absentee["uid"]
             if uid in exclude_uids:
-                skipped_count += 1
+                skipped += 1
                 continue
             try:
-                exists = self.db.query(ProcessedAttendance).filter(
+                already = self.db.query(ProcessedAttendance).filter(
                     ProcessedAttendance.uid    == uid,
                     ProcessedAttendance.date   == target_date,
                     ProcessedAttendance.status == AttendanceStatus.LOP,
                 ).first()
-                if exists:
-                    skipped_count += 1
+                if already:
+                    skipped += 1
                     continue
 
                 lop = ProcessedAttendance(
-                    uid=uid, date=target_date, shift=None,
-                    first_in=None, last_out=None,
-                    work_duration_hours=0.0, overtime_hours=0.0,
+                    uid=uid,
+                    date=target_date,
+                    shift=None,
+                    first_in=None,
+                    last_out=None,
+                    work_duration_hours=0.0,
+                    overtime_hours=0.0,
                     status=AttendanceStatus.LOP,
-                    is_late=False, is_early_leave=False,
-                    late_by_minutes=0, early_leave_by_minutes=0,
+                    is_late=False,
+                    is_early_leave=False,
+                    late_by_minutes=0,
+                    early_leave_by_minutes=0,
                     total_punches=0,
+                    is_finalized=True,
                     remarks="Loss of Pay — no attendance recorded",
                 )
                 self.db.add(lop)
-                marked_count += 1
+                marked += 1
             except Exception as e:
                 errors.append({"uid": uid, "error": str(e)})
 
@@ -87,14 +108,18 @@ class LOPService:
             self.db.commit()
         except Exception as e:
             self.db.rollback()
-            return {"status": "error", "message": str(e), "marked": 0, "skipped": 0, "errors": errors}
+            return {
+                "status":  "error",
+                "message": f"Commit failed: {e}",
+                "marked":  0, "skipped": 0, "errors": errors,
+            }
 
         return {
             "status":          "success",
             "date":            target_date.isoformat(),
             "total_absentees": len(absentee_data["absentees"]),
-            "marked":          marked_count,
-            "skipped":         skipped_count,
+            "marked":          marked,
+            "skipped":         skipped,
             "errors":          errors,
         }
 
@@ -138,7 +163,6 @@ class LOPService:
 
         total_days = (end_date - start_date).days + 1
         lop_count  = len(lop_records)
-
         return {
             "uid":  uid,
             "name": user.name,
@@ -162,14 +186,22 @@ class LOPService:
         ).first()
 
         if not rec:
-            return {"status": "error", "message": f"No LOP record for UID {uid} on {target_date}"}
+            return {
+                "status":  "error",
+                "message": f"No LOP record for UID {uid} on {target_date}",
+            }
 
         try:
             rec.status     = AttendanceStatus.ABSENT
             rec.remarks    = f"LOP removed: {reason}" if reason else "LOP removed"
             rec.updated_at = datetime.utcnow()
             self.db.commit()
-            return {"status": "success", "message": f"LOP removed for UID {uid} on {target_date}", "uid": uid, "date": str(target_date)}
+            return {
+                "status":  "success",
+                "message": f"LOP removed for UID {uid} on {target_date}",
+                "uid":     uid,
+                "date":    str(target_date),
+            }
         except Exception as e:
             self.db.rollback()
             return {"status": "error", "message": str(e)}

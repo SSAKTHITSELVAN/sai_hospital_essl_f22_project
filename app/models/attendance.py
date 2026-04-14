@@ -1,10 +1,22 @@
 # app/models/attendance.py
 #
-# SQL migration (run once):
+# SQL migration — run once:
+#
 #   ALTER TABLE processed_attendance
 #       ADD COLUMN IF NOT EXISTS punch_sessions TEXT    DEFAULT NULL,
 #       ADD COLUMN IF NOT EXISTS overtime_hours FLOAT   DEFAULT 0.0;
-#   ALTER TYPE attendancestatus ADD VALUE IF NOT EXISTS 'present_ot';
+#
+#   DO $$
+#   BEGIN
+#     IF NOT EXISTS (
+#       SELECT 1 FROM pg_enum
+#       WHERE enumlabel='present_ot'
+#         AND enumtypid=(SELECT oid FROM pg_type WHERE typname='attendancestatus')
+#     ) THEN
+#       ALTER TYPE attendancestatus ADD VALUE 'present_ot';
+#     END IF;
+#   END$$;
+#
 #   ALTER TABLE processed_attendance ALTER COLUMN shift DROP NOT NULL;
 #
 from sqlalchemy import (
@@ -14,6 +26,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
+
 from app.core.database import Base
 
 
@@ -56,10 +69,10 @@ class ProcessedAttendance(Base):
     uid  = Column(Integer, ForeignKey("users.uid"), nullable=False, index=True)
     date = Column(Date, nullable=False, index=True)
 
-    # JSON: [{"in": ISO, "out": ISO}, ...]  — always 1 or 2 sessions
+    # JSON list: [{"in": ISO, "out": ISO}, ...]  — always 1 or 2 items
     punch_sessions = Column(Text, nullable=True)
 
-    # shift label stored as plain string: "Regular" or "Break Shift"
+    # "Regular" or "Break Shift"
     shift = Column(String(20), nullable=True)
 
     first_in            = Column(DateTime, nullable=True)
@@ -68,14 +81,20 @@ class ProcessedAttendance(Base):
     overtime_hours      = Column(Float,   nullable=True, default=0.0)
     total_punches       = Column(Integer, default=0)
 
-    status   = Column(Enum(AttendanceStatus), nullable=False)
-    remarks  = Column(String(500), nullable=True)
+    status  = Column(Enum(AttendanceStatus), nullable=False)
+    remarks = Column(String(500), nullable=True)
 
-    # kept for DB compatibility — always False/0 in new records
+    # Legacy compatibility columns — always False/0 in new records
     is_late                = Column(Boolean, default=False)
     is_early_leave         = Column(Boolean, default=False)
     late_by_minutes        = Column(Integer, default=0)
     early_leave_by_minutes = Column(Integer, default=0)
+
+    # Processed flag — set True once the day is fully settled.
+    # A day is "settled" when: last_out is not None AND
+    # the record was created/updated after the last punch of that day.
+    # The processor sets this; it prevents re-processing on every sync.
+    is_finalized = Column(Boolean, default=False, nullable=False)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

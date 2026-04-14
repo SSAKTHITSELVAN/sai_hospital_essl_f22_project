@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, func
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from typing import Optional
 
 from app.core.database import get_db
@@ -16,7 +16,6 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 
 
 def _serialize_record(rec: ProcessedAttendance) -> dict:
-    """Serialize a ProcessedAttendance record including all punch sessions."""
     sessions = []
     if rec.punch_sessions:
         try:
@@ -24,35 +23,33 @@ def _serialize_record(rec: ProcessedAttendance) -> dict:
         except Exception:
             pass
 
-    hours = rec.work_duration_hours or 0.0
-    ot    = rec.overtime_hours      or 0.0
-
     return {
-        "id":                   rec.id,
-        "uid":                  rec.uid,
-        "user_name":            rec.user.name if rec.user else "Unknown",
-        "date":                 rec.date.isoformat(),
-        "sessions":             sessions,           # [{in, out}, ...]
-        "first_in":             rec.first_in.isoformat()  if rec.first_in  else None,
-        "last_out":             rec.last_out.isoformat()  if rec.last_out  else None,
-        "work_duration_hours":  round(hours, 2),
-        "overtime_hours":       round(ot,    2),
-        "status":               rec.status.value if rec.status else None,
-        "total_punches":        rec.total_punches,
-        "remarks":              rec.remarks,
-        # kept for UI compatibility
-        "shift":                None,
-        "shift_label":          None,
-        "is_late":              False,
-        "late_by_minutes":      0,
-        "is_early_leave":       False,
-        "early_leave_by_minutes": 0,
+        "id":                    rec.id,
+        "uid":                   rec.uid,
+        "user_name":             rec.user.name if rec.user else "Unknown",
+        "date":                  rec.date.isoformat(),
+        "sessions":              sessions,
+        "shift":                 rec.shift or "Regular",
+        "first_in":              rec.first_in.isoformat()  if rec.first_in  else None,
+        "last_out":              rec.last_out.isoformat()  if rec.last_out  else None,
+        "work_duration_hours":   round(rec.work_duration_hours or 0, 2),
+        "overtime_hours":        round(rec.overtime_hours      or 0, 2),
+        "status":                rec.status.value if rec.status else None,
+        "total_punches":         rec.total_punches,
+        "is_finalized":          rec.is_finalized,
+        "remarks":               rec.remarks,
+        # UI compat (always neutral)
+        "is_late":               False,
+        "late_by_minutes":       0,
+        "is_early_leave":        False,
+        "early_leave_by_minutes":0,
+        "shift_label":           rec.shift or "Regular",
     }
 
 
 @router.get("/logs")
 async def get_attendance_logs(
-    uid: Optional[int] = Query(None),
+    uid:        Optional[int]  = Query(None),
     start_date: Optional[date] = Query(None),
     end_date:   Optional[date] = Query(None),
     skip:  int = Query(0,   ge=0),
@@ -89,7 +86,7 @@ async def get_attendance_logs(
 
 @router.get("/processed")
 async def get_processed_attendance(
-    uid: Optional[int] = Query(None),
+    uid:        Optional[int]  = Query(None),
     start_date: Optional[date] = Query(None),
     end_date:   Optional[date] = Query(None),
     skip:  int = Query(0,   ge=0),
@@ -139,11 +136,10 @@ async def get_attendance_summary(
         if export and export.lower() == "csv":
             import io, csv
             from fastapi.responses import StreamingResponse
-
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow([
-                "month", "date", "status",
+                "month", "date", "shift", "status",
                 "first_in", "last_out",
                 "work_duration_hours", "overtime_hours",
                 "total_punches", "remarks",
@@ -151,15 +147,10 @@ async def get_attendance_summary(
             for m in summary.get("months", []):
                 for d in m.get("days", []):
                     writer.writerow([
-                        m.get("month"),
-                        d.get("date"),
-                        d.get("status"),
-                        d.get("first_in"),
-                        d.get("last_out"),
-                        d.get("work_duration_hours"),
-                        d.get("overtime_hours", 0),
-                        d.get("total_punches"),
-                        d.get("remarks"),
+                        m.get("month"), d.get("date"), d.get("shift"), d.get("status"),
+                        d.get("first_in"), d.get("last_out"),
+                        d.get("work_duration_hours"), d.get("overtime_hours", 0),
+                        d.get("total_punches"), d.get("remarks"),
                     ])
             output.seek(0)
             filename = f"attendance_{uid}_{start_date}_{end_date}.csv"
@@ -177,25 +168,28 @@ async def get_attendance_summary(
 
 @router.post("/process")
 async def process_attendance(
-    uid: Optional[int] = Query(None),
+    uid:         Optional[int]  = Query(None),
     target_date: Optional[date] = Query(None),
+    force:       bool           = Query(False, description="Force reprocess even if finalized"),
     db: Session = Depends(get_db),
 ):
     try:
         processor = AttendanceProcessor(db)
         if uid and target_date:
-            result = processor.process_daily_attendance(uid, target_date)
+            result = processor.process_daily_attendance(uid, target_date, force=force)
             if result:
-                return success_response("Attendance processed successfully", {
+                return success_response("Attendance processed", {
                     "uid":                  result.uid,
                     "date":                 result.date.isoformat(),
                     "status":               result.status.value,
+                    "shift":                result.shift,
                     "work_duration_hours":  result.work_duration_hours,
                     "overtime_hours":       result.overtime_hours or 0.0,
+                    "is_finalized":         result.is_finalized,
                 })
             return error_response("No attendance logs found", {"uid": uid, "date": str(target_date)})
         stats = processor.process_all_pending()
-        return success_response("All pending attendance processed", stats)
+        return success_response("Pending attendance processed", stats)
     except Exception as e:
         import traceback; traceback.print_exc()
         return error_response("Failed to process attendance", {"error": str(e)})
@@ -212,23 +206,21 @@ async def get_today_attendance(db: Session = Depends(get_db)):
             .all()
         )
         return success_response(
-            f"Retrieved today's attendance for {len(records)} users",
+            f"Today's attendance: {len(records)} users",
             {
                 "date":        today.isoformat(),
                 "total_users": len(records),
                 "records": [
                     {
-                        "uid":                  rec.uid,
-                        "name":                 rec.user.name if rec.user else "Unknown",
-                        "first_in":             rec.first_in.isoformat()  if rec.first_in  else None,
-                        "last_out":             rec.last_out.isoformat()  if rec.last_out  else None,
-                        "status":               rec.status.value if rec.status else None,
-                        "work_duration_hours":  rec.work_duration_hours,
-                        "overtime_hours":       rec.overtime_hours or 0.0,
-                        # UI compat
-                        "shift":                None,
-                        "shift_label":          None,
-                        "is_late":              False,
+                        "uid":                 rec.uid,
+                        "name":                rec.user.name if rec.user else "Unknown",
+                        "shift":               rec.shift or "Regular",
+                        "first_in":            rec.first_in.isoformat()  if rec.first_in  else None,
+                        "last_out":            rec.last_out.isoformat()  if rec.last_out  else None,
+                        "status":              rec.status.value if rec.status else None,
+                        "work_duration_hours": rec.work_duration_hours,
+                        "overtime_hours":      rec.overtime_hours or 0.0,
+                        "is_finalized":        rec.is_finalized,
                     }
                     for rec in records
                 ],
@@ -249,16 +241,12 @@ async def get_attendance_stats(
         if not start_date: start_date = date.today().replace(day=1)
         if not end_date:   end_date   = date.today()
 
-        records = (
-            db.query(ProcessedAttendance)
-            .filter(
-                and_(
-                    ProcessedAttendance.date >= start_date,
-                    ProcessedAttendance.date <= end_date,
-                )
+        records = db.query(ProcessedAttendance).filter(
+            and_(
+                ProcessedAttendance.date >= start_date,
+                ProcessedAttendance.date <= end_date,
             )
-            .all()
-        )
+        ).all()
 
         total       = len(records)
         present     = sum(1 for r in records if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.PRESENT_OT))
@@ -266,18 +254,17 @@ async def get_attendance_stats(
         incomplete  = sum(1 for r in records if r.status == AttendanceStatus.INCOMPLETE)
         total_hours = sum(r.work_duration_hours or 0 for r in records)
         total_ot    = sum(r.overtime_hours      or 0 for r in records)
-        avg_hours   = round(total_hours / total, 2) if total else 0
 
         return success_response("Attendance statistics retrieved", {
             "period":     {"start_date": str(start_date), "end_date": str(end_date)},
             "statistics": {
-                "total_records":         total,
-                "present":               present,
-                "half_day":              half_day,
-                "incomplete":            incomplete,
-                "total_work_hours":      round(total_hours, 2),
-                "total_overtime_hours":  round(total_ot,    2),
-                "average_work_hours":    avg_hours,
+                "total_records":        total,
+                "present":              present,
+                "half_day":             half_day,
+                "incomplete":           incomplete,
+                "total_work_hours":     round(total_hours, 2),
+                "total_overtime_hours": round(total_ot,    2),
+                "average_work_hours":   round(total_hours / total, 2) if total else 0,
             },
             "percentages": {
                 "present":    round(present   / total * 100, 2) if total else 0,
