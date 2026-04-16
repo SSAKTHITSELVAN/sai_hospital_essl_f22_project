@@ -253,10 +253,10 @@ def _write_excel_single(
 
         buf = io.BytesIO()
         wb.save(buf)
-        return buf.getvalue()
+        buf.seek(0)   # rewind so StreamingResponse reads from the start
+        return buf
 
     except ImportError:
-        # Fallback: plain CSV in xlsx wrapper via openpyxl not available
         raise
 
 
@@ -345,7 +345,8 @@ def _write_excel_multi(months_data: list) -> bytes:
 
     buf = io.BytesIO()
     wb.save(buf)
-    return buf.getvalue()
+    buf.seek(0)   # rewind so StreamingResponse reads from the start
+    return buf
 
 
 # ── CSV helper ────────────────────────────────────────────────────────────── #
@@ -405,7 +406,7 @@ async def monthly_report(
             )
             filename = f"Attendance_{user.name.replace(' ','_')}_{month_name}_{year}.xlsx"
             return StreamingResponse(
-                iter([xlsx]),
+                xlsx,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
@@ -478,7 +479,7 @@ async def monthly_report_all(
             xlsx     = _write_excel_multi(months_data)
             filename = f"All_Employees_{month_name}_{year}.xlsx"
             return StreamingResponse(
-                iter([xlsx]),
+                xlsx,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
@@ -558,7 +559,7 @@ async def range_report(
             xlsx     = _write_excel_multi(months_data)
             filename = f"Attendance_{user.name.replace(' ','_')}_{start_date}_{end_date}.xlsx"
             return StreamingResponse(
-                iter([xlsx]),
+                xlsx,
                 media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )

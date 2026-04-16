@@ -58,16 +58,31 @@ export default function Reports() {
 
   const download = async (fmt) => {
     try {
-      const res = await api.get(
-        `/api/v1/payroll/monthly-report-all?year=${year}&month=${month}&export=${fmt}`,
-        { responseType: 'blob' }
-      );
       const mime = fmt === 'excel'
         ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         : 'text/csv';
       const ext = fmt === 'excel' ? 'xlsx' : 'csv';
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: mime }));
-      const a   = document.createElement('a');
+
+      const res = await api.get(
+        `/api/v1/payroll/monthly-report-all?year=${year}&month=${month}&export=${fmt}`,
+        { responseType: 'blob' }
+      );
+
+      // Guard: if the server returned a JSON error body instead of a file,
+      // the blob will have type 'application/json' — show the error instead
+      // of saving a corrupt file that Excel/browser cannot open.
+      if (res.data.type === 'application/json') {
+        const text = await res.data.text();
+        console.error('Export error from server:', text);
+        alert('Export failed — server returned an error. Check the browser console.');
+        return;
+      }
+
+      // axios with responseType:'blob' already gives res.data as a Blob.
+      // We still wrap it so we can enforce the correct MIME type.
+      const blob = new Blob([res.data], { type: mime });
+      const url  = window.URL.createObjectURL(blob);
+      const a    = document.createElement('a');
       a.href     = url;
       a.download = `All_Employees_${MONTHS[month-1]}_${year}.${ext}`;
       document.body.appendChild(a);
@@ -75,6 +90,7 @@ export default function Reports() {
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (e) {
+      console.error(`${fmt.toUpperCase()} export failed:`, e);
       alert(`${fmt.toUpperCase()} export failed`);
     }
   };
