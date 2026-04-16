@@ -175,9 +175,23 @@ class DeviceSyncService:
             new_count = 0
             duplicate_count = 0
             error_count = 0
+            skipped_count = 0
+
+            # Build a set of all known UIDs in the users table to avoid
+            # ForeignKeyViolation when a device log references a UID that
+            # was never synced (e.g. deleted/missing user with UID 4).
+            known_uids = {
+                row[0]
+                for row in self.db.query(User.uid).all()
+            }
 
             for device_log in logs:
                 try:
+                    # Skip logs whose UID has no matching user row
+                    if device_log.user_id not in known_uids:
+                        skipped_count += 1
+                        continue
+
                     existing = self.db.query(AttendanceLog).filter(
                         AttendanceLog.uid == device_log.user_id,
                         AttendanceLog.timestamp == device_log.timestamp
@@ -207,10 +221,14 @@ class DeviceSyncService:
                 "total": len(logs),
                 "new": new_count,
                 "duplicates": duplicate_count,
+                "skipped_unknown_uid": skipped_count,
                 "errors": error_count
             }
 
-            print(f"📋 Logs synced — Total: {len(logs)}, New: {new_count}, Duplicates: {duplicate_count}")
+            print(
+                f"📋 Logs synced — Total: {len(logs)}, New: {new_count}, "
+                f"Duplicates: {duplicate_count}, Skipped (unknown UID): {skipped_count}"
+            )
             return result
 
         except Exception as e:
@@ -272,6 +290,10 @@ class DeviceSyncService:
 
     def _log_sync_status(self, status: str, message: str):
         try:
+            # VARCHAR(500) limit — truncate long messages (e.g. full exception traces)
+            if len(message) > 500:
+                message = message[:497] + "..."
+
             device = self.db.query(Device).filter(
                 Device.device_ip == self.device_ip
             ).first()
