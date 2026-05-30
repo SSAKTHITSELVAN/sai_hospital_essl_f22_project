@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Users from './pages/Users';
@@ -7,9 +7,23 @@ import Attendance from './pages/Attendance';
 import Payroll from './pages/Payroll';
 import Reports from './pages/Reports';
 import Layout from './components/Layout';
-import { isAuthenticated } from './utils/auth';
+import { isAuthenticated, logout } from './utils/auth';
 
 function PrivateRoute({ children }) {
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    // Check authentication every 10 seconds
+    const interval = setInterval(() => {
+      if (!isAuthenticated()) {
+        logout();
+        navigate('/login');
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [navigate]);
+
   return isAuthenticated() ? children : <Navigate to="/login" />;
 }
 
