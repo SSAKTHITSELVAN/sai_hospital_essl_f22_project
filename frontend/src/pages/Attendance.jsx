@@ -136,8 +136,8 @@ export default function Attendance() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Daily Attendance</h1>
-          <p className="text-gray-600 mt-1">MS Softwares - View attendance by date</p>
+          <p className="text-sm text-gray-500 uppercase tracking-wide font-semibold mb-1">Daily Records</p>
+          <p className="text-gray-600">View attendance by date (all employees)</p>
         </div>
         <button
           onClick={handleExport}

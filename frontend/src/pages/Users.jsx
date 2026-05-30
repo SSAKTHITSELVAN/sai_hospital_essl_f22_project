@@ -83,8 +83,8 @@ export default function Users() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Employees</h1>
-          <p className="text-gray-600 mt-1">MS Softwares - Employee Directory</p>
+          <p className="text-sm text-gray-500 uppercase tracking-wide font-semibold mb-1">Employee Directory</p>
+          <p className="text-gray-600">All employees including admin & staff</p>
         </div>
         <div className="flex items-center gap-2 px-4 py-2 bg-blue-100 rounded-lg">
           <UsersIcon className="w-5 h-5 text-blue-600" />

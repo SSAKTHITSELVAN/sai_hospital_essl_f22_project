@@ -311,7 +311,7 @@ export default function Layout({ children }) {
               <Menu className="w-6 h-6" />
             </button>
 
-            <div className="flex-1 lg:flex-none">
+            <div className="flex-1 lg:flex-none lg:hidden">
               <h2 className="text-xl font-semibold text-gray-800">
                 {menuItems.find(item => item.path === location.pathname)?.label || 'Dashboard'}
               </h2>

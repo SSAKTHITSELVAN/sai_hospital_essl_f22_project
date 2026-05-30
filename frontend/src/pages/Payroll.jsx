@@ -131,8 +131,8 @@ export default function Payroll() {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Payroll Report</h1>
-          <p className="text-gray-600 mt-1">MS Softwares - Employee payroll summary</p>
+          <p className="text-sm text-gray-500 uppercase tracking-wide font-semibold mb-1">Payroll Summary</p>
+          <p className="text-gray-600">Employee payroll summary (all employees)</p>
         </div>
         <button
           onClick={handleExport}

@@ -118,8 +118,8 @@ export default function Dashboard() {
       {/* Header */}
       <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-1">MS Softwares - Real-time attendance overview</p>
+          <p className="text-sm text-gray-500 uppercase tracking-wide font-semibold mb-1">Overview</p>
+          <p className="text-gray-600">Real-time attendance monitoring</p>
         </div>
         <button
           onClick={handleExport}
