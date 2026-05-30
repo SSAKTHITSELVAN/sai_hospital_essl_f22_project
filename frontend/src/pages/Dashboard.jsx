@@ -4,6 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
 import { Users, Clock, CheckCircle, AlertCircle, Calendar, Download } from 'lucide-react';
+import DeviceStatus from '../components/DeviceStatus';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
@@ -118,7 +119,7 @@ export default function Dashboard() {
       <div className="flex justify-between items-center">
         <div>
           <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-          <p className="text-gray-600 mt-1">Real-time attendance overview</p>
+          <p className="text-gray-600 mt-1">MS Softwares - Real-time attendance overview</p>
         </div>
         <button
           onClick={handleExport}
@@ -129,6 +130,9 @@ export default function Dashboard() {
           {exporting ? 'Exporting...' : 'Export to Excel'}
         </button>
       </div>
+
+      {/* Device Status */}
+      <DeviceStatus />
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -200,10 +204,7 @@ export default function Dashboard() {
                   Employee Name
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  First IN
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  Last OUT
+                  Punch Sessions
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
                   Work Hours
@@ -224,28 +225,50 @@ export default function Dashboard() {
                   </td>
                 </tr>
               ) : (
-                todayAttendance.map((record, idx) => (
-                  <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="font-medium text-gray-900">{record.user_name || 'Unknown'}</div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {formatTime(record.first_in)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {formatTime(record.last_out)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {record.work_duration_hours ? `${record.work_duration_hours.toFixed(2)} hrs` : '-'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {record.shift || 'Regular'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {getStatusBadge(record.status)}
-                    </td>
-                  </tr>
-                ))
+                todayAttendance.map((record, idx) => {
+                  // Parse punch sessions
+                  let sessions = [];
+                  try {
+                    sessions = record.punch_sessions ? JSON.parse(record.punch_sessions) : [];
+                  } catch (e) {
+                    sessions = [];
+                  }
+
+                  return (
+                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="font-medium text-gray-900">{record.user_name || 'Unknown'}</div>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-700">
+                        {sessions.length === 0 ? (
+                          <span className="text-gray-400">-</span>
+                        ) : (
+                          <div className="space-y-1">
+                            {sessions.map((session, sidx) => (
+                              <div key={sidx} className="flex items-center gap-2">
+                                {sessions.length > 1 && (
+                                  <span className="text-xs font-medium text-gray-500">{sidx + 1}:</span>
+                                )}
+                                <span className="text-green-700">IN: {formatTime(session.in)}</span>
+                                <span className="text-gray-400">→</span>
+                                <span className="text-red-700">OUT: {formatTime(session.out)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {record.work_duration_hours ? `${record.work_duration_hours.toFixed(2)} hrs` : '-'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {record.shift || 'Regular'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {getStatusBadge(record.status)}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

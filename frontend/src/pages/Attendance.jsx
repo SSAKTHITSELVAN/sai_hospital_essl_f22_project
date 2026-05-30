@@ -1,63 +1,56 @@
 // frontend/src/pages/Attendance.jsx
-// Fix: removed hardcoded limit=100 — replaced with proper pagination.
-//      With 20+ employees over a month, the old code silently truncated
-//      data with no indication anything was missing.
+// MS Softwares - Daily Attendance View (Single Date Filter)
 
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
-import * as XLSX from 'xlsx';
-import { Download, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
-
-const PAGE_SIZE = 100;
-
-const STATUS_CLASS = {
-  present:    'bg-green-100 text-green-700',
-  present_ot: 'bg-teal-100 text-teal-700',
-  half_day:   'bg-yellow-100 text-yellow-700',
-  incomplete: 'bg-red-100 text-red-700',
-  absent:     'bg-gray-200 text-gray-600',
-  lop:        'bg-red-200 text-red-900',
-};
-
-const STATUS_LABEL = {
-  present:    'Present',
-  present_ot: 'Present + OT',
-  half_day:   'Half Day',
-  incomplete: 'Incomplete',
-  absent:     'Absent',
-  lop:        'LOP',
-};
+import { Calendar, Download, RefreshCw, Users, Clock } from 'lucide-react';
 
 export default function Attendance() {
-  const today   = new Date().toISOString().split('T')[0];
-  const [attendance, setAttendance] = useState([]);
-  const [total, setTotal]           = useState(0);
-  const [page, setPage]             = useState(0);       // 0-indexed
-  const [loading, setLoading]       = useState(true);
-  const [startDate, setStartDate]   = useState(today);
-  const [endDate, setEndDate]       = useState(today);
+  const today = new Date().toISOString().split('T')[0];
 
-  // Reset to page 0 when date range changes
-  useEffect(() => {
-    setPage(0);
-  }, [startDate, endDate]);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [attendance, setAttendance] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [exporting, setExporting] = useState(false);
+  const [stats, setStats] = useState({
+    total: 0,
+    present: 0,
+    halfDay: 0,
+    incomplete: 0
+  });
 
   useEffect(() => {
     fetchAttendance();
-  }, [startDate, endDate, page]);
+  }, [selectedDate]);
 
   const fetchAttendance = async () => {
     try {
       setLoading(true);
-      const skip = page * PAGE_SIZE;
-      const res  = await api.get(
-        `/api/v1/attendance/processed` +
-        `?start_date=${startDate}&end_date=${endDate}` +
-        `&skip=${skip}&limit=${PAGE_SIZE}`
-      );
-      if (res.data.status === 'success') {
-        setAttendance(res.data.data.records);
-        setTotal(res.data.data.pagination.total);
+
+      // Fetch processed attendance for the selected date
+      const response = await api.get(`/api/v1/attendance/processed`, {
+        params: {
+          start_date: selectedDate,
+          end_date: selectedDate,
+          limit: 1000
+        }
+      });
+
+      if (response.data.status === 'success') {
+        const records = response.data.data.records || [];
+        setAttendance(records);
+
+        // Calculate stats
+        const present = records.filter(r => r.status === 'present' || r.status === 'present_ot').length;
+        const halfDay = records.filter(r => r.status === 'half_day').length;
+        const incomplete = records.filter(r => r.status === 'incomplete').length;
+
+        setStats({
+          total: records.length,
+          present,
+          halfDay,
+          incomplete
+        });
       }
     } catch (error) {
       console.error('Error fetching attendance:', error);
@@ -66,169 +59,290 @@ export default function Attendance() {
     }
   };
 
-  const totalPages = Math.ceil(total / PAGE_SIZE);
-
-  const exportToExcel = () => {
-    if (attendance.length === 0) return alert('No data to export');
-    const data = attendance.map(r => ({
-      'Date':        new Date(r.date).toLocaleDateString('en-IN'),
-      'Employee':    r.user_name,
-      'Shift':       r.shift || 'Regular',
-      'In Time':     r.first_in  ? new Date(r.first_in).toLocaleTimeString('en-IN')  : '-',
-      'Out Time':    r.last_out  ? new Date(r.last_out).toLocaleTimeString('en-IN')  : '-',
-      'Work Hours':  r.work_duration_hours ? r.work_duration_hours.toFixed(2) : '0.00',
-      'OT Hours':    r.overtime_hours      ? r.overtime_hours.toFixed(2)      : '0.00',
-      'Status':      STATUS_LABEL[r.status] || r.status?.toUpperCase() || '-',
-      'Remarks':     r.remarks || '',
-    }));
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Attendance');
-    XLSX.writeFile(wb, `Attendance_${startDate}_to_${endDate}.xlsx`);
-  };
-
-  const processAttendance = async () => {
+  const handleExport = async () => {
     try {
-      const res = await api.post('/api/v1/attendance/process');
-      if (res.data.status === 'success') {
-        alert('Attendance processed successfully!');
-        fetchAttendance();
-      }
-    } catch {
-      alert('Failed to process attendance');
+      setExporting(true);
+      const response = await api.get('/api/v1/export/today-attendance', {
+        responseType: 'blob',
+        params: { date: selectedDate }
+      });
+
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Attendance_${selectedDate}.xlsx`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (error) {
+      console.error('Export failed:', error);
+      alert('Failed to export attendance');
+    } finally {
+      setExporting(false);
     }
   };
+
+  const getStatusBadge = (status) => {
+    const badges = {
+      present:    'bg-green-100 text-green-800 border-green-200',
+      present_ot: 'bg-blue-100 text-blue-800 border-blue-200',
+      half_day:   'bg-yellow-100 text-yellow-800 border-yellow-200',
+      incomplete: 'bg-orange-100 text-orange-800 border-orange-200',
+      absent:     'bg-red-100 text-red-800 border-red-200',
+      lop:        'bg-red-200 text-red-900 border-red-300',
+    };
+    const labels = {
+      present:    'Present',
+      present_ot: 'Present (OT)',
+      half_day:   'Half Day',
+      incomplete: 'Incomplete',
+      absent:     'Absent',
+      lop:        'LOP',
+    };
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-medium border ${badges[status] || badges.incomplete}`}>
+        {labels[status] || 'Unknown'}
+      </span>
+    );
+  };
+
+  const formatTime = (datetime) => {
+    if (!datetime) return '-';
+    const date = new Date(datetime);
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  };
+
+  const formatDate = (dateStr) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+      <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">Attendance Records</h1>
-          <p className="text-gray-500 text-sm mt-1">
-            {total > 0 ? `${total} records found` : 'No records for this range'}
-          </p>
+          <h1 className="text-3xl font-bold text-gray-900">Daily Attendance</h1>
+          <p className="text-gray-600 mt-1">MS Softwares - View attendance by date</p>
         </div>
-        <div className="flex items-center gap-3">
-          <button onClick={processAttendance}
-            className="flex items-center gap-2 bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
+        <button
+          onClick={handleExport}
+          disabled={exporting || attendance.length === 0}
+          className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          <Download className="w-4 h-4" />
+          {exporting ? 'Exporting...' : 'Export to Excel'}
+        </button>
+      </div>
+
+      {/* Date Filter & Stats */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Date Picker */}
+        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+          <label className="block text-sm font-medium text-gray-700 mb-3">
+            <Calendar className="inline w-4 h-4 mr-2" />
+            Select Date
+          </label>
+          <input
+            type="date"
+            value={selectedDate}
+            onChange={(e) => setSelectedDate(e.target.value)}
+            max={today}
+            className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+          />
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <p className="text-xs text-gray-600">{formatDate(selectedDate)}</p>
+          </div>
+        </div>
+
+        {/* Quick Stats */}
+        <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="flex items-center gap-2 text-gray-600 mb-1">
+              <Users className="w-4 h-4" />
+              <p className="text-xs font-medium">Total</p>
+            </div>
+            <p className="text-2xl font-bold text-gray-900">{stats.total}</p>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="flex items-center gap-2 text-green-600 mb-1">
+              <Clock className="w-4 h-4" />
+              <p className="text-xs font-medium">Present</p>
+            </div>
+            <p className="text-2xl font-bold text-green-600">{stats.present}</p>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="flex items-center gap-2 text-yellow-600 mb-1">
+              <Clock className="w-4 h-4" />
+              <p className="text-xs font-medium">Half Day</p>
+            </div>
+            <p className="text-2xl font-bold text-yellow-600">{stats.halfDay}</p>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+            <div className="flex items-center gap-2 text-orange-600 mb-1">
+              <Clock className="w-4 h-4" />
+              <p className="text-xs font-medium">Incomplete</p>
+            </div>
+            <p className="text-2xl font-bold text-orange-600">{stats.incomplete}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Attendance Table */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Attendance Records</h2>
+            <p className="text-sm text-gray-600 mt-1">{formatDate(selectedDate)}</p>
+          </div>
+          <button
+            onClick={fetchAttendance}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+          >
             <RefreshCw className="w-4 h-4" />
-            Process
-          </button>
-          <button onClick={exportToExcel}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors">
-            <Download className="w-4 h-4" />
-            Export Excel
+            Refresh
           </button>
         </div>
-      </div>
 
-      {/* Date Filters */}
-      <div className="bg-white rounded-xl shadow-sm p-4">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1">FROM</label>
-            <input type="date" value={startDate}
-              onChange={e => setStartDate(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1">TO</label>
-            <input type="date" value={endDate}
-              onChange={e => setEndDate(e.target.value)}
-              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-          </div>
-        </div>
-      </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="bg-gray-50 border-b border-gray-200">
+              <tr>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  S.No
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Employee Name
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Punch Sessions
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Work Hours
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Shift Type
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Status
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {attendance.length === 0 ? (
+                <tr>
+                  <td colSpan="7" className="px-6 py-12 text-center">
+                    <div className="flex flex-col items-center justify-center text-gray-500">
+                      <Users className="w-12 h-12 mb-3 text-gray-400" />
+                      <p className="text-lg font-medium">No attendance records found</p>
+                      <p className="text-sm mt-1">
+                        No employees punched in/out on {formatDate(selectedDate)}
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : (
+                attendance.map((record, idx) => {
+                  // Parse punch sessions JSON
+                  let sessions = [];
+                  try {
+                    sessions = record.punch_sessions ? JSON.parse(record.punch_sessions) : [];
+                  } catch (e) {
+                    sessions = [];
+                  }
 
-      {/* Table */}
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-        {loading ? (
-          <div className="flex items-center justify-center h-48">
-            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
-          </div>
-        ) : (
-          <>
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="bg-gray-50 border-b">
-                  <tr>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Date</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Employee</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Shift</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">In Time</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Out Time</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Hours</th>
-                    <th className="text-left py-4 px-6 font-semibold text-gray-600">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {attendance.map(record => (
-                    <tr key={record.id} className="border-b hover:bg-gray-50">
-                      <td className="py-3 px-6 font-medium">
-                        {new Date(record.date).toLocaleDateString('en-IN')}
+                  return (
+                    <tr key={idx} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {idx + 1}
                       </td>
-                      <td className="py-3 px-6 font-medium">{record.user_name}</td>
-                      <td className="py-3 px-6 text-gray-500">{record.shift || 'Regular'}</td>
-                      <td className="py-3 px-6 text-gray-600">
-                        {record.first_in
-                          ? new Date(record.first_in).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-                          : '—'}
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                            <span className="text-blue-700 font-semibold text-sm">
+                              {record.user_name?.charAt(0).toUpperCase() || '?'}
+                            </span>
+                          </div>
+                          <div className="ml-4">
+                            <div className="text-sm font-medium text-gray-900">
+                              {record.user_name || 'Unknown'}
+                            </div>
+                            <div className="text-xs text-gray-500">UID: {record.uid}</div>
+                          </div>
+                        </div>
                       </td>
-                      <td className="py-3 px-6 text-gray-600">
-                        {record.last_out
-                          ? new Date(record.last_out).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
-                          : '—'}
+                      <td className="px-6 py-4 text-sm text-gray-700">
+                        {sessions.length === 0 ? (
+                          <span className="text-gray-400">No sessions</span>
+                        ) : (
+                          <div className="space-y-1">
+                            {sessions.map((session, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span className="text-xs font-medium text-gray-500">
+                                  {sessions.length > 1 ? `Session ${idx + 1}:` : ''}
+                                </span>
+                                <span className="text-green-700 font-medium">
+                                  IN: {formatTime(session.in)}
+                                </span>
+                                <span className="text-gray-400">→</span>
+                                <span className="text-red-700 font-medium">
+                                  OUT: {formatTime(session.out)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </td>
-                      <td className="py-3 px-6 font-semibold text-indigo-700">
-                        {record.work_duration_hours ? `${record.work_duration_hours.toFixed(2)}h` : '—'}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {record.work_duration_hours ? `${record.work_duration_hours.toFixed(2)} hrs` : '-'}
                       </td>
-                      <td className="py-3 px-6">
-                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${STATUS_CLASS[record.status] || 'bg-gray-100 text-gray-700'}`}>
-                          {STATUS_LABEL[record.status] || record.status}
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        <span className={`px-2 py-1 rounded text-xs font-medium ${
+                          record.shift === 'Break Shift'
+                            ? 'bg-purple-100 text-purple-800'
+                            : 'bg-gray-100 text-gray-800'
+                        }`}>
+                          {record.shift || 'Regular'}
                         </span>
                       </td>
-                    </tr>
-                  ))}
-                  {attendance.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="py-12 text-center text-gray-400">
-                        No attendance records for the selected date range.
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {getStatusBadge(record.status)}
                       </td>
                     </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                  );
+                })
 
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex items-center justify-between px-6 py-4 border-t">
-                <p className="text-sm text-gray-500">
-                  Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total} records
-                </p>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setPage(p => Math.max(0, p - 1))}
-                    disabled={page === 0}
-                    className="p-2 rounded-lg border hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <span className="text-sm font-medium px-3">
-                    {page + 1} / {totalPages}
-                  </span>
-                  <button
-                    onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))}
-                    disabled={page >= totalPages - 1}
-                    className="p-2 rounded-lg border hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
+
+      {/* Footer Info */}
+      {attendance.length > 0 && (
+        <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+          <p className="text-sm text-blue-900">
+            <span className="font-semibold">{attendance.length}</span> employee{attendance.length !== 1 ? 's' : ''} recorded on {formatDate(selectedDate)}
+          </p>
+        </div>
+      )}
     </div>
   );
 }
