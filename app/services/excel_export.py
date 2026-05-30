@@ -89,8 +89,10 @@ class ExcelExportService:
         Export today's attendance to Excel.
 
         Format:
-        - S.No | Employee Name | First IN | Last OUT | Work Hours | Shift Type | Status
+        - S.No | Employee Name | IN-1 | OUT-1 | IN-2 | OUT-2 | Work Hours | Shift Type | Status
         """
+        import json
+
         wb = Workbook()
         ws = wb.active
         ws.title = "Today Attendance"
@@ -98,11 +100,11 @@ class ExcelExportService:
         # Title
         ws['A1'] = f"Attendance Report - {date.today().strftime('%d-%b-%Y')}"
         ws['A1'].font = Font(name='Calibri', size=14, bold=True)
-        ws.merge_cells('A1:G1')
+        ws.merge_cells('A1:I1')
         ws['A1'].alignment = Alignment(horizontal="center")
 
         # Headers
-        headers = ["S.No", "Employee Name", "First IN", "Last OUT", "Work Hours", "Shift Type", "Status"]
+        headers = ["S.No", "Employee Name", "IN-1", "OUT-1", "IN-2", "OUT-2", "Work Hours", "Shift Type", "Status"]
         for col, header in enumerate(headers, start=1):
             ws.cell(row=3, column=col, value=header)
 
@@ -121,13 +123,42 @@ class ExcelExportService:
         # Data rows
         row = 4
         for idx, (att, user) in enumerate(attendance_records, start=1):
+            # Parse punch sessions
+            sessions = []
+            try:
+                if att.punch_sessions:
+                    sessions = json.loads(att.punch_sessions)
+            except:
+                sessions = []
+
+            # Get session 1 and session 2
+            session_1 = sessions[0] if len(sessions) > 0 else {}
+            session_2 = sessions[1] if len(sessions) > 1 else {}
+
+            in_1 = session_1.get('in')
+            out_1 = session_1.get('out')
+            in_2 = session_2.get('in')
+            out_2 = session_2.get('out')
+
+            # Format times
+            def format_time(time_str):
+                if not time_str:
+                    return "Not Used"
+                try:
+                    dt = datetime.fromisoformat(time_str)
+                    return dt.strftime('%I:%M %p')
+                except:
+                    return "Not Used"
+
             ws.cell(row=row, column=1, value=idx)
             ws.cell(row=row, column=2, value=user.name)
-            ws.cell(row=row, column=3, value=att.first_in.strftime('%I:%M %p') if att.first_in else "-")
-            ws.cell(row=row, column=4, value=att.last_out.strftime('%I:%M %p') if att.last_out else "-")
-            ws.cell(row=row, column=5, value=f"{att.work_duration_hours:.2f}" if att.work_duration_hours else "0.00")
-            ws.cell(row=row, column=6, value=att.shift or "Regular")
-            ws.cell(row=row, column=7, value=att.status.value.upper() if att.status else "INCOMPLETE")
+            ws.cell(row=row, column=3, value=format_time(in_1))
+            ws.cell(row=row, column=4, value=format_time(out_1))
+            ws.cell(row=row, column=5, value=format_time(in_2))
+            ws.cell(row=row, column=6, value=format_time(out_2))
+            ws.cell(row=row, column=7, value=f"{att.work_duration_hours:.2f}" if att.work_duration_hours else "0.00")
+            ws.cell(row=row, column=8, value=att.shift or "Regular")
+            ws.cell(row=row, column=9, value=att.status.value.upper() if att.status else "INCOMPLETE")
             row += 1
 
         # Style data rows
