@@ -53,7 +53,7 @@ async def get_attendance_logs(
     start_date: Optional[date] = Query(None),
     end_date:   Optional[date] = Query(None),
     skip:  int = Query(0,   ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=10000),
     db: Session = Depends(get_db),
 ):
     try:
@@ -90,7 +90,7 @@ async def get_processed_attendance(
     start_date: Optional[date] = Query(None),
     end_date:   Optional[date] = Query(None),
     skip:  int = Query(0,   ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=10000),
     db: Session = Depends(get_db),
 ):
     try:
