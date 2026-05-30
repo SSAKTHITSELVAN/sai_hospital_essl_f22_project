@@ -405,9 +405,11 @@ export default function Attendance() {
                                     <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${
                                       isComplete
                                         ? 'bg-green-100 text-green-700 border border-green-200'
-                                        : 'bg-orange-100 text-orange-700 border border-orange-200'
+                                        : hasIn
+                                        ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                        : 'bg-gray-100 text-gray-500 border border-gray-200'
                                     }`}>
-                                      {isComplete ? 'Complete' : 'Incomplete'}
+                                      {isComplete ? 'Complete' : hasIn ? 'Started' : 'No Data'}
                                     </span>
                                   </div>
 
