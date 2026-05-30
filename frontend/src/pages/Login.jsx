@@ -41,13 +41,14 @@ export default function Login() {
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
         {/* Header Section */}
         <div className="bg-white px-8 py-10 text-center border-b border-gray-200">
-          <div className="flex items-center justify-center mb-4">
+          <div className="flex items-center justify-center mb-3">
             <img
               src={logo}
               alt="MS Softwares Logo"
               className="h-20 w-auto object-contain"
             />
           </div>
+          <h1 className="text-2xl font-bold text-blue-600 mb-2">MS Softwares</h1>
           <p className="text-gray-600 text-sm font-medium">Attendance Management System</p>
         </div>
 

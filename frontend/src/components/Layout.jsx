@@ -198,6 +198,7 @@ export default function Layout({ children }) {
               className="h-16 w-auto object-contain"
             />
           </div>
+          <h1 className="text-xl font-bold text-blue-600 text-center mb-1">MS Softwares</h1>
           <p className="text-xs text-gray-600 text-center font-medium">Attendance Management System</p>
         </div>
 
@@ -253,6 +254,7 @@ export default function Layout({ children }) {
                     className="h-14 w-auto object-contain"
                   />
                 </div>
+                <h1 className="text-lg font-bold text-blue-600 text-center mb-1">MS Softwares</h1>
                 <p className="text-xs text-gray-600 text-center font-medium">Attendance System</p>
               </div>
               <button onClick={() => setSidebarOpen(false)} className="text-gray-600 hover:text-gray-800 ml-2">
