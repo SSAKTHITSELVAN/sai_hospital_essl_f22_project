@@ -110,7 +110,7 @@ class UserUpdateRequest(BaseModel):
 @router.get("")
 async def get_all_users(
     skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
+    limit: int = Query(100, ge=1, le=10000),
     include_inactive: bool = Query(False, description="Include soft-deleted users"),
     db: Session = Depends(get_db)
 ):
