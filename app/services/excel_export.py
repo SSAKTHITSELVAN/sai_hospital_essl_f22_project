@@ -84,21 +84,23 @@ class ExcelExportService:
             adjusted_width = min(max_length + 2, 50)
             ws.column_dimensions[column_letter].width = adjusted_width
 
-    def export_today_attendance(self) -> BytesIO:
+    def export_today_attendance(self, target_date: date = None) -> BytesIO:
         """
-        Export today's attendance to Excel.
+        Export attendance for a given date to Excel.
 
         Format:
         - S.No | Employee Name | IN-1 | OUT-1 | IN-2 | OUT-2 | Work Hours | Shift Type | Status
         """
         import json
 
+        export_date = target_date or date.today()
+
         wb = Workbook()
         ws = wb.active
-        ws.title = "Today Attendance"
+        ws.title = "Attendance"
 
         # Title
-        ws['A1'] = f"Attendance Report - {date.today().strftime('%d-%b-%Y')}"
+        ws['A1'] = f"Attendance Report - {export_date.strftime('%d-%b-%Y')}"
         ws['A1'].font = Font(name='Calibri', size=14, bold=True)
         ws.merge_cells('A1:I1')
         ws['A1'].alignment = Alignment(horizontal="center")
@@ -110,12 +112,11 @@ class ExcelExportService:
 
         self._style_header(ws, 3, len(headers))
 
-        # Fetch today's attendance
-        today = date.today()
+        # Fetch attendance for the target date
         attendance_records = (
             self.db.query(ProcessedAttendance, User)
             .join(User, ProcessedAttendance.uid == User.uid)
-            .filter(ProcessedAttendance.date == today)
+            .filter(ProcessedAttendance.date == export_date)
             .order_by(User.name)
             .all()
         )

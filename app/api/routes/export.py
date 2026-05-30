@@ -20,18 +20,22 @@ router = APIRouter(prefix="/api/v1/export", tags=["Export"])
 
 
 @router.get("/today-attendance")
-def export_today_attendance(db: Session = Depends(get_db)):
+def export_today_attendance(
+    target_date: date = Query(None, alias="date", description="Date to export (YYYY-MM-DD). Defaults to today."),
+    db: Session = Depends(get_db)
+):
     """
-    Export today's attendance to Excel (.xlsx).
+    Export attendance for a specific date to Excel (.xlsx).
 
     Returns:
-        Excel file download with today's attendance data
+        Excel file download with attendance data
     """
     try:
+        export_date = target_date or date.today()
         export_service = ExcelExportService(db)
-        excel_file = export_service.export_today_attendance()
+        excel_file = export_service.export_today_attendance(export_date)
 
-        filename = f"Attendance_{date.today().strftime('%Y%m%d')}.xlsx"
+        filename = f"Attendance_{export_date.strftime('%Y%m%d')}.xlsx"
 
         return StreamingResponse(
             excel_file,
