@@ -304,22 +304,28 @@ export default function Attendance() {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   S.No
                 </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   Employee Name
                 </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Punch Sessions
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  IN-1
                 </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  OUT-1
+                </th>
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  IN-2
+                </th>
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  OUT-2
+                </th>
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   Work Hours
                 </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
-                  Shift Type
-                </th>
-                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   Status
                 </th>
               </tr>
@@ -327,7 +333,7 @@ export default function Attendance() {
             <tbody className="bg-white divide-y divide-gray-200">
               {attendance.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="px-6 py-12 text-center">
+                  <td colSpan="8" className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center justify-center text-gray-500">
                       <Users className="w-12 h-12 mb-3 text-gray-400" />
                       <p className="text-lg font-medium">No attendance records found</p>
@@ -342,17 +348,59 @@ export default function Attendance() {
                   // Parse punch sessions JSON
                   let sessions = [];
                   try {
-                    sessions = record.punch_sessions ? JSON.parse(record.punch_sessions) : [];
+                    sessions = record.sessions || [];
                   } catch (e) {
                     sessions = [];
                   }
 
+                  // Get session 1 and session 2 data
+                  const session1 = sessions[0] || {};
+                  const session2 = sessions[1] || {};
+
+                  const in1 = session1.in;
+                  const out1 = session1.out;
+                  const in2 = session2.in;
+                  const out2 = session2.out;
+
+                  const isToday = selectedDate === today;
+
+                  // Helper function to render punch cell
+                  const renderPunchCell = (time, type, sessionNum) => {
+                    const hasTime = time && time !== null;
+                    const isIn = type === 'in';
+                    const isOngoing = isToday && hasTime && isIn &&
+                                     ((sessionNum === 1 && !out1) || (sessionNum === 2 && !out2));
+
+                    return (
+                      <td className="px-4 py-4 text-sm">
+                        {hasTime ? (
+                          <div className="space-y-1">
+                            <div className={`font-medium ${isIn ? 'text-green-700' : 'text-red-700'}`}>
+                              {formatTime(time)}
+                            </div>
+                            {isOngoing && (
+                              <div className="flex items-center gap-1 text-xs">
+                                <Clock className="w-3 h-3 text-blue-600 animate-pulse" />
+                                <LiveTimer startTime={time} />
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-gray-400 text-xs">Not Used</span>
+                        )}
+                      </td>
+                    );
+                  };
+
                   return (
                     <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                      {/* S.No */}
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                         {idx + 1}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
+
+                      {/* Employee Name */}
+                      <td className="px-4 py-4 whitespace-nowrap">
                         <div className="flex items-center">
                           <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
                             <span className="text-blue-700 font-semibold text-sm">
@@ -367,86 +415,31 @@ export default function Attendance() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-700">
-                        {sessions.length === 0 ? (
-                          <span className="text-gray-400">No sessions</span>
-                        ) : (
-                          <div className="space-y-2">
-                            {sessions.map((session, idx) => {
-                              const sessionNum = idx + 1;
-                              const hasIn = session.in && session.in !== null;
-                              const hasOut = session.out && session.out !== null;
-                              const isComplete = hasIn && hasOut;
-                              const isToday = selectedDate === today;
-                              const showLiveTimer = isToday && hasIn && !hasOut;
 
-                              return (
-                                <div key={idx} className="space-y-1">
-                                  <div className="flex items-center gap-3 text-xs">
-                                    {/* IN Punch */}
-                                    <div className="flex items-center gap-1">
-                                      <span className="font-semibold text-gray-600">IN-{sessionNum}:</span>
-                                      <span className={`font-medium ${hasIn ? 'text-green-700' : 'text-gray-400'}`}>
-                                        {hasIn ? formatTime(session.in) : '--:--'}
-                                      </span>
-                                    </div>
+                      {/* IN-1 */}
+                      {renderPunchCell(in1, 'in', 1)}
 
-                                    <span className="text-gray-300">•</span>
+                      {/* OUT-1 */}
+                      {renderPunchCell(out1, 'out', 1)}
 
-                                    {/* OUT Punch */}
-                                    <div className="flex items-center gap-1">
-                                      <span className="font-semibold text-gray-600">OUT-{sessionNum}:</span>
-                                      <span className={`font-medium ${hasOut ? 'text-red-700' : 'text-gray-400'}`}>
-                                        {hasOut ? formatTime(session.out) : '--:--'}
-                                      </span>
-                                    </div>
+                      {/* IN-2 */}
+                      {renderPunchCell(in2, 'in', 2)}
 
-                                    {/* Session Status */}
-                                    <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${
-                                      isComplete
-                                        ? 'bg-green-100 text-green-700 border border-green-200'
-                                        : hasIn
-                                        ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                                        : 'bg-gray-100 text-gray-500 border border-gray-200'
-                                    }`}>
-                                      {isComplete ? 'Complete' : hasIn ? 'Started' : 'No Data'}
-                                    </span>
-                                  </div>
+                      {/* OUT-2 */}
+                      {renderPunchCell(out2, 'out', 2)}
 
-                                  {/* Live Timer for ongoing sessions */}
-                                  {showLiveTimer && (
-                                    <div className="flex items-center gap-2 pl-2 py-1 bg-blue-50 rounded border border-blue-200">
-                                      <Clock className="w-3 h-3 text-blue-600" />
-                                      <span className="text-xs font-medium text-blue-700">Elapsed:</span>
-                                      <LiveTimer startTime={session.in} />
-                                      <span className="text-xs text-blue-600 italic">(Session ongoing...)</span>
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                      {/* Work Hours */}
+                      <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                         {record.work_duration_hours ? `${record.work_duration_hours.toFixed(2)} hrs` : '-'}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                        <span className={`px-2 py-1 rounded text-xs font-medium ${
-                          record.shift === 'Break Shift'
-                            ? 'bg-purple-100 text-purple-800'
-                            : 'bg-gray-100 text-gray-800'
-                        }`}>
-                          {record.shift || 'Regular'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
+
+                      {/* Status */}
+                      <td className="px-4 py-4 whitespace-nowrap">
                         {getStatusBadge(record.status)}
                       </td>
                     </tr>
                   );
                 })
-
               )}
             </tbody>
           </table>
