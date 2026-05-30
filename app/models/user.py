@@ -8,10 +8,12 @@ from app.core.database import Base
 class User(Base):
     """User model - stores employee information"""
     __tablename__ = "users"
-    
+
     id = Column(Integer, primary_key=True, index=True)
-    uid = Column(Integer, unique=True, index=True, nullable=False)  # Device UID
-    name = Column(String(100), nullable=False)
+    uid = Column(Integer, unique=True, index=True, nullable=False)  # Primary UID (for backward compatibility)
+    device_1_uid = Column(Integer, nullable=True, index=True)  # UID from Device 1 (IN device)
+    device_2_uid = Column(Integer, nullable=True, index=True)  # UID from Device 2 (OUT device)
+    name = Column(String(100), nullable=False, unique=True)  # Name is unique identifier
     privilege = Column(Integer, default=0)  # User privilege level
     password = Column(String(50), nullable=True)
     group_id = Column(String(50), nullable=True)
@@ -20,7 +22,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     # Relationships
     attendance_logs = relationship("AttendanceLog", back_populates="user")
     processed_attendance = relationship("ProcessedAttendance", back_populates="user")

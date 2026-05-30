@@ -5,6 +5,36 @@ import React, { useState, useEffect } from 'react';
 import api from '../services/api';
 import { Calendar, Download, RefreshCw, Users, Clock } from 'lucide-react';
 
+// Live Timer Component for ongoing sessions
+function LiveTimer({ startTime }) {
+  const [elapsed, setElapsed] = useState('');
+
+  useEffect(() => {
+    const updateTimer = () => {
+      const start = new Date(startTime);
+      const now = new Date();
+      const diffMs = now - start;
+
+      const hours = Math.floor(diffMs / (1000 * 60 * 60));
+      const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+
+      setElapsed(`${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
+    };
+
+    updateTimer();
+    const interval = setInterval(updateTimer, 1000);
+
+    return () => clearInterval(interval);
+  }, [startTime]);
+
+  return (
+    <span className="font-mono text-blue-600 font-bold animate-pulse">
+      {elapsed}
+    </span>
+  );
+}
+
 export default function Attendance() {
   const today = new Date().toISOString().split('T')[0];
 
@@ -16,12 +46,24 @@ export default function Attendance() {
     total: 0,
     present: 0,
     halfDay: 0,
-    incomplete: 0
+    incomplete: 0,
+    activeSessions: 0
   });
 
   useEffect(() => {
     fetchAttendance();
   }, [selectedDate]);
+
+  // Auto-refresh every 30 seconds if viewing today's date
+  useEffect(() => {
+    if (selectedDate === today) {
+      const interval = setInterval(() => {
+        fetchAttendance();
+      }, 30000); // Refresh every 30 seconds
+
+      return () => clearInterval(interval);
+    }
+  }, [selectedDate, today]);
 
   const fetchAttendance = async () => {
     try {
@@ -45,11 +87,29 @@ export default function Attendance() {
         const halfDay = records.filter(r => r.status === 'half_day').length;
         const incomplete = records.filter(r => r.status === 'incomplete').length;
 
+        // Count active sessions (has IN but no OUT on today's date)
+        let activeSessions = 0;
+        if (selectedDate === today) {
+          records.forEach(record => {
+            try {
+              const sessions = record.sessions || [];
+              sessions.forEach(session => {
+                if (session.in && !session.out) {
+                  activeSessions++;
+                }
+              });
+            } catch (e) {
+              // Ignore parsing errors
+            }
+          });
+        }
+
         setStats({
           total: records.length,
           present,
           halfDay,
-          incomplete
+          incomplete,
+          activeSessions
         });
       }
     } catch (error) {
@@ -170,7 +230,7 @@ export default function Attendance() {
         </div>
 
         {/* Quick Stats */}
-        <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-5 gap-4">
           <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
             <div className="flex items-center gap-2 text-gray-600 mb-1">
               <Users className="w-4 h-4" />
@@ -202,6 +262,17 @@ export default function Attendance() {
             </div>
             <p className="text-2xl font-bold text-orange-600">{stats.incomplete}</p>
           </div>
+
+          {/* Active Sessions (only show for today) */}
+          {selectedDate === today && (
+            <div className="bg-white rounded-xl shadow-sm border border-blue-200 p-4">
+              <div className="flex items-center gap-2 text-blue-600 mb-1">
+                <Clock className="w-4 h-4 animate-pulse" />
+                <p className="text-xs font-medium">Active Now</p>
+              </div>
+              <p className="text-2xl font-bold text-blue-600">{stats.activeSessions}</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -210,14 +281,22 @@ export default function Attendance() {
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center">
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Attendance Records</h2>
-            <p className="text-sm text-gray-600 mt-1">{formatDate(selectedDate)}</p>
+            <div className="flex items-center gap-3 mt-1">
+              <p className="text-sm text-gray-600">{formatDate(selectedDate)}</p>
+              {selectedDate === today && (
+                <span className="flex items-center gap-1 text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                  <Clock className="w-3 h-3 animate-pulse" />
+                  Auto-refresh every 30s
+                </span>
+              )}
+            </div>
           </div>
           <button
             onClick={fetchAttendance}
             className="flex items-center gap-2 px-3 py-2 text-sm text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
           >
             <RefreshCw className="w-4 h-4" />
-            Refresh
+            Refresh Now
           </button>
         </div>
 
@@ -292,21 +371,58 @@ export default function Attendance() {
                         {sessions.length === 0 ? (
                           <span className="text-gray-400">No sessions</span>
                         ) : (
-                          <div className="space-y-1">
-                            {sessions.map((session, idx) => (
-                              <div key={idx} className="flex items-center gap-2">
-                                <span className="text-xs font-medium text-gray-500">
-                                  {sessions.length > 1 ? `Session ${idx + 1}:` : ''}
-                                </span>
-                                <span className="text-green-700 font-medium">
-                                  IN: {formatTime(session.in)}
-                                </span>
-                                <span className="text-gray-400">→</span>
-                                <span className="text-red-700 font-medium">
-                                  OUT: {formatTime(session.out)}
-                                </span>
-                              </div>
-                            ))}
+                          <div className="space-y-2">
+                            {sessions.map((session, idx) => {
+                              const sessionNum = idx + 1;
+                              const hasIn = session.in && session.in !== null;
+                              const hasOut = session.out && session.out !== null;
+                              const isComplete = hasIn && hasOut;
+                              const isToday = selectedDate === today;
+                              const showLiveTimer = isToday && hasIn && !hasOut;
+
+                              return (
+                                <div key={idx} className="space-y-1">
+                                  <div className="flex items-center gap-3 text-xs">
+                                    {/* IN Punch */}
+                                    <div className="flex items-center gap-1">
+                                      <span className="font-semibold text-gray-600">IN-{sessionNum}:</span>
+                                      <span className={`font-medium ${hasIn ? 'text-green-700' : 'text-gray-400'}`}>
+                                        {hasIn ? formatTime(session.in) : '--:--'}
+                                      </span>
+                                    </div>
+
+                                    <span className="text-gray-300">•</span>
+
+                                    {/* OUT Punch */}
+                                    <div className="flex items-center gap-1">
+                                      <span className="font-semibold text-gray-600">OUT-{sessionNum}:</span>
+                                      <span className={`font-medium ${hasOut ? 'text-red-700' : 'text-gray-400'}`}>
+                                        {hasOut ? formatTime(session.out) : '--:--'}
+                                      </span>
+                                    </div>
+
+                                    {/* Session Status */}
+                                    <span className={`ml-2 px-2 py-0.5 rounded text-xs font-medium ${
+                                      isComplete
+                                        ? 'bg-green-100 text-green-700 border border-green-200'
+                                        : 'bg-orange-100 text-orange-700 border border-orange-200'
+                                    }`}>
+                                      {isComplete ? 'Complete' : 'Incomplete'}
+                                    </span>
+                                  </div>
+
+                                  {/* Live Timer for ongoing sessions */}
+                                  {showLiveTimer && (
+                                    <div className="flex items-center gap-2 pl-2 py-1 bg-blue-50 rounded border border-blue-200">
+                                      <Clock className="w-3 h-3 text-blue-600" />
+                                      <span className="text-xs font-medium text-blue-700">Elapsed:</span>
+                                      <LiveTimer startTime={session.in} />
+                                      <span className="text-xs text-blue-600 italic">(Session ongoing...)</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </td>

@@ -139,11 +139,13 @@ class DeviceSyncService:
         """
         Sync users from BOTH devices and merge by name.
 
-        Logic:
-        - Fetch users from Device 1 and Device 2
-        - Merge users with same name (case-insensitive)
-        - Create/update user records in DB
-        - Store mapping from both device UIDs to DB user
+        NEW LOGIC:
+        - Each user has device_1_uid and device_2_uid columns
+        - Users are matched by NAME (case-insensitive)
+        - If user exists on Device 1 → store in device_1_uid
+        - If user exists on Device 2 → store in device_2_uid
+        - If user exists on both → store both UIDs
+        - Primary uid = device_1_uid if available, else device_2_uid
 
         Returns:
             Dict with sync statistics
@@ -156,63 +158,99 @@ class DeviceSyncService:
             print(f"📥 Fetched {len(device_1_users)} users from Device 1 (IN)")
             print(f"📥 Fetched {len(device_2_users)} users from Device 2 (OUT)")
 
-            # Build name → user mapping from both devices
-            # Key: normalized name, Value: list of (device_num, device_user_obj)
-            users_by_name: Dict[str, List[Tuple[int, any]]] = {}
+            # Build name → device UIDs mapping
+            # Key: normalized name, Value: {device_1_uid, device_2_uid, user_obj}
+            users_by_name: Dict[str, Dict] = {}
 
+            # Collect Device 1 users
             for device_user in device_1_users:
                 norm_name = _normalize_name(device_user.name)
                 if norm_name not in users_by_name:
-                    users_by_name[norm_name] = []
-                users_by_name[norm_name].append((1, device_user))
+                    users_by_name[norm_name] = {
+                        'device_1_uid': None,
+                        'device_2_uid': None,
+                        'device_1_user': None,
+                        'device_2_user': None,
+                    }
+                users_by_name[norm_name]['device_1_uid'] = device_user.uid
+                users_by_name[norm_name]['device_1_user'] = device_user
 
+            # Collect Device 2 users
             for device_user in device_2_users:
                 norm_name = _normalize_name(device_user.name)
                 if norm_name not in users_by_name:
-                    users_by_name[norm_name] = []
-                users_by_name[norm_name].append((2, device_user))
+                    users_by_name[norm_name] = {
+                        'device_1_uid': None,
+                        'device_2_uid': None,
+                        'device_1_user': None,
+                        'device_2_user': None,
+                    }
+                users_by_name[norm_name]['device_2_uid'] = device_user.uid
+                users_by_name[norm_name]['device_2_user'] = device_user
 
             added_count   = 0
             updated_count = 0
 
             # Process each unique name
-            for norm_name, device_entries in users_by_name.items():
-                # Pick primary entry (prefer Device 1, or first entry)
-                primary_entry = next((e for e in device_entries if e[0] == 1), device_entries[0])
-                _, primary_user = primary_entry
+            for norm_name, user_data in users_by_name.items():
+                # Get primary user object (prefer Device 1)
+                primary_user = user_data['device_1_user'] or user_data['device_2_user']
+
+                # Determine primary UID (prefer Device 1)
+                primary_uid = user_data['device_1_uid'] or user_data['device_2_uid']
 
                 # Check if user exists in DB by name
                 existing = self.db.query(User).filter(
-                    User.name.ilike(primary_user.name)  # case-insensitive
+                    User.name.ilike(primary_user.name)
                 ).first()
 
                 if existing:
-                    # Update existing user
+                    # Update existing user with both device UIDs
+                    if user_data['device_1_uid']:
+                        existing.device_1_uid = user_data['device_1_uid']
+                    if user_data['device_2_uid']:
+                        existing.device_2_uid = user_data['device_2_uid']
+
+                    # Update primary UID if needed
+                    existing.uid = user_data['device_1_uid'] or user_data['device_2_uid']
+
+                    # Update other fields from primary user
                     existing.privilege   = primary_user.privilege
                     existing.password    = primary_user.password
                     existing.group_id    = primary_user.group_id
                     existing.is_active   = True
                     existing.updated_at  = datetime.utcnow()
                     updated_count += 1
-                    print(f"✅ Updated user: {primary_user.name}")
-                else:
-                    # Create new user
-                    # Use Device 1 UID if available, else Device 2 UID
-                    primary_uid = next((e[1].uid for e in device_entries if e[0] == 1), device_entries[0][1].uid)
 
+                    dev_info = []
+                    if user_data['device_1_uid']:
+                        dev_info.append(f"Dev1:UID={user_data['device_1_uid']}")
+                    if user_data['device_2_uid']:
+                        dev_info.append(f"Dev2:UID={user_data['device_2_uid']}")
+                    print(f"✅ Updated user: {primary_user.name} ({', '.join(dev_info)})")
+                else:
+                    # Create new user with both device UIDs
                     new_user = User(
-                        uid         = primary_uid,
-                        name        = primary_user.name,
-                        privilege   = primary_user.privilege,
-                        password    = primary_user.password,
-                        group_id    = primary_user.group_id,
-                        user_id_str = str(primary_user.user_id),
-                        card_no     = str(primary_user.card) if primary_user.card else None,
-                        is_active   = True,
+                        uid           = primary_uid,
+                        device_1_uid  = user_data['device_1_uid'],
+                        device_2_uid  = user_data['device_2_uid'],
+                        name          = primary_user.name,
+                        privilege     = primary_user.privilege,
+                        password      = primary_user.password,
+                        group_id      = primary_user.group_id,
+                        user_id_str   = str(primary_user.user_id),
+                        card_no       = str(primary_user.card) if primary_user.card else None,
+                        is_active     = True,
                     )
                     self.db.add(new_user)
                     added_count += 1
-                    print(f"➕ Added new user: {primary_user.name}")
+
+                    dev_info = []
+                    if user_data['device_1_uid']:
+                        dev_info.append(f"Dev1:UID={user_data['device_1_uid']}")
+                    if user_data['device_2_uid']:
+                        dev_info.append(f"Dev2:UID={user_data['device_2_uid']}")
+                    print(f"➕ Added new user: {primary_user.name} ({', '.join(dev_info)})")
 
             self.db.commit()
 
@@ -261,31 +299,37 @@ class DeviceSyncService:
             skipped_count   = 0
             error_count     = 0
 
-            # Build name → DB user mapping
-            name_to_user: Dict[str, User] = {}
+            # Build device UID → DB user mappings
+            device_1_uid_to_user: Dict[int, User] = {}
+            device_2_uid_to_user: Dict[int, User] = {}
+
             for user in self.db.query(User).filter(User.is_active == True).all():
-                norm_name = _normalize_name(user.name)
-                name_to_user[norm_name] = user
+                if user.device_1_uid:
+                    device_1_uid_to_user[user.device_1_uid] = user
+                if user.device_2_uid:
+                    device_2_uid_to_user[user.device_2_uid] = user
+
+            # Fetch device users for UID mapping
+            device_1_users_list = self.conn_1.get_users() if self.conn_1 else []
+            device_2_users_list = self.conn_2.get_users() if self.conn_2 else []
 
             # Process Device 1 logs (IN device)
             for device_log in logs_dev1:
                 try:
-                    # Match by name from Device 1
-                    device_1_users = self.conn_1.get_users() if self.conn_1 else []
-                    device_user = next((u for u in device_1_users if u.user_id == device_log.user_id), None)
+                    # Find device user by user_id
+                    device_user = next((u for u in device_1_users_list if u.user_id == device_log.user_id), None)
 
                     if not device_user:
                         print(f"⚠️  Device 1: Unknown user_id {device_log.user_id}")
                         skipped_count += 1
                         continue
 
-                    norm_name = _normalize_name(device_user.name)
-                    if norm_name not in name_to_user:
-                        print(f"⚠️  Device 1: User '{device_user.name}' not in DB")
+                    # Match by Device 1 UID
+                    db_user = device_1_uid_to_user.get(device_user.uid)
+                    if not db_user:
+                        print(f"⚠️  Device 1: UID {device_user.uid} ({device_user.name}) not in DB")
                         skipped_count += 1
                         continue
-
-                    db_user = name_to_user[norm_name]
 
                     # Check for duplicate
                     existing = self.db.query(AttendanceLog).filter(
@@ -317,22 +361,20 @@ class DeviceSyncService:
             # Process Device 2 logs (OUT device)
             for device_log in logs_dev2:
                 try:
-                    # Match by name from Device 2
-                    device_2_users = self.conn_2.get_users() if self.conn_2 else []
-                    device_user = next((u for u in device_2_users if u.user_id == device_log.user_id), None)
+                    # Find device user by user_id
+                    device_user = next((u for u in device_2_users_list if u.user_id == device_log.user_id), None)
 
                     if not device_user:
                         print(f"⚠️  Device 2: Unknown user_id {device_log.user_id}")
                         skipped_count += 1
                         continue
 
-                    norm_name = _normalize_name(device_user.name)
-                    if norm_name not in name_to_user:
-                        print(f"⚠️  Device 2: User '{device_user.name}' not in DB")
+                    # Match by Device 2 UID
+                    db_user = device_2_uid_to_user.get(device_user.uid)
+                    if not db_user:
+                        print(f"⚠️  Device 2: UID {device_user.uid} ({device_user.name}) not in DB")
                         skipped_count += 1
                         continue
-
-                    db_user = name_to_user[norm_name]
 
                     # Check for duplicate
                     existing = self.db.query(AttendanceLog).filter(
