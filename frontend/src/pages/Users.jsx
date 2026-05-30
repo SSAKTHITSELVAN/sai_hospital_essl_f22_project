@@ -3,7 +3,7 @@
 
 import React, { useState, useEffect } from 'react';
 import api from '../services/api';
-import { Search, Users as UsersIcon, CheckCircle, XCircle } from 'lucide-react';
+import { Search, Users as UsersIcon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 
 export default function Users() {
   const [users, setUsers] = useState([]);
@@ -124,6 +124,9 @@ export default function Users() {
                   Employee Name
                 </th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
+                  Device Registration
+                </th>
+                <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
                   Privilege
                 </th>
                 <th className="px-6 py-4 text-left text-xs font-semibold text-gray-700 uppercase tracking-wider">
@@ -137,7 +140,7 @@ export default function Users() {
             <tbody className="bg-white divide-y divide-gray-200">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="px-6 py-12 text-center">
+                  <td colSpan="6" className="px-6 py-12 text-center">
                     <div className="flex flex-col items-center justify-center text-gray-500">
                       <UsersIcon className="w-12 h-12 mb-3 text-gray-400" />
                       <p className="text-lg font-medium">No employees found</p>
@@ -148,46 +151,100 @@ export default function Users() {
                   </td>
                 </tr>
               ) : (
-                filteredUsers.map((user) => (
-                  <tr key={user.uid} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <span className="text-sm font-mono font-medium text-gray-900">
-                        {user.uid}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center">
-                        <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
-                          <span className="text-blue-700 font-semibold text-sm">
-                            {user.name.charAt(0).toUpperCase()}
+                filteredUsers.map((user) => {
+                  const hasDevice1 = user.device_1_uid !== null && user.device_1_uid !== undefined;
+                  const hasDevice2 = user.device_2_uid !== null && user.device_2_uid !== undefined;
+                  const bothDevices = hasDevice1 && hasDevice2;
+
+                  return (
+                    <tr key={user.uid} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="text-sm font-mono font-medium text-gray-900">
+                          {user.uid}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                            <span className="text-blue-700 font-semibold text-sm">
+                              {user.name.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                          <div className="ml-4">
+                            <div className="text-sm font-medium text-gray-900">{user.name}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center gap-2">
+                          {/* Device 1 (IN Device) */}
+                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border ${
+                            hasDevice1
+                              ? 'bg-green-50 text-green-700 border-green-200'
+                              : 'bg-gray-50 text-gray-400 border-gray-200'
+                          }`}>
+                            {hasDevice1 ? (
+                              <>
+                                <CheckCircle className="w-3 h-3" />
+                                <span>Device 1 (IN)</span>
+                                <span className="text-gray-500">UID:{user.device_1_uid}</span>
+                              </>
+                            ) : (
+                              <>
+                                <XCircle className="w-3 h-3" />
+                                <span>Device 1</span>
+                              </>
+                            )}
+                          </div>
+
+                          {/* Device 2 (OUT Device) */}
+                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border ${
+                            hasDevice2
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-gray-50 text-gray-400 border-gray-200'
+                          }`}>
+                            {hasDevice2 ? (
+                              <>
+                                <CheckCircle className="w-3 h-3" />
+                                <span>Device 2 (OUT)</span>
+                                <span className="text-gray-500">UID:{user.device_2_uid}</span>
+                              </>
+                            ) : (
+                              <>
+                                <XCircle className="w-3 h-3" />
+                                <span>Device 2</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        {bothDevices && (
+                          <div className="mt-1 text-xs text-green-600 font-medium">
+                            ✓ Registered on both devices
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {getPrivilegeBadge(user.privilege)}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {user.is_active ? (
+                          <span className="flex items-center gap-2 text-green-700">
+                            <CheckCircle className="w-4 h-4" />
+                            <span className="text-sm font-medium">Active</span>
                           </span>
-                        </div>
-                        <div className="ml-4">
-                          <div className="text-sm font-medium text-gray-900">{user.name}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {getPrivilegeBadge(user.privilege)}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
-                      {user.is_active ? (
-                        <span className="flex items-center gap-2 text-green-700">
-                          <CheckCircle className="w-4 h-4" />
-                          <span className="text-sm font-medium">Active</span>
-                        </span>
-                      ) : (
-                        <span className="flex items-center gap-2 text-red-700">
-                          <XCircle className="w-4 h-4" />
-                          <span className="text-sm font-medium">Inactive</span>
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                      {formatDate(user.created_at)}
-                    </td>
-                  </tr>
-                ))
+                        ) : (
+                          <span className="flex items-center gap-2 text-red-700">
+                            <XCircle className="w-4 h-4" />
+                            <span className="text-sm font-medium">Inactive</span>
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                        {formatDate(user.created_at)}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -195,19 +252,40 @@ export default function Users() {
       </div>
 
       {/* Footer Summary */}
-      <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-        <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2 text-blue-900">
-            <CheckCircle className="w-5 h-5" />
-            <span className="font-medium">
-              {users.filter(u => u.is_active).length} Active Employees
-            </span>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* Active/Inactive Summary */}
+        <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-blue-900">
+              <CheckCircle className="w-5 h-5" />
+              <span className="font-medium">
+                {users.filter(u => u.is_active).length} Active Employees
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-gray-600">
+              <XCircle className="w-5 h-5" />
+              <span className="font-medium">
+                {users.filter(u => !u.is_active).length} Inactive
+              </span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 text-gray-600">
-            <XCircle className="w-5 h-5" />
-            <span className="font-medium">
-              {users.filter(u => !u.is_active).length} Inactive
-            </span>
+        </div>
+
+        {/* Device Registration Summary */}
+        <div className="bg-green-50 rounded-lg p-4 border border-green-200">
+          <div className="flex items-center justify-between text-sm">
+            <div className="flex items-center gap-2 text-green-900">
+              <CheckCircle className="w-5 h-5" />
+              <span className="font-medium">
+                {users.filter(u => u.device_1_uid && u.device_2_uid).length} On Both Devices
+              </span>
+            </div>
+            <div className="flex items-center gap-2 text-orange-600">
+              <AlertCircle className="w-5 h-5" />
+              <span className="font-medium">
+                {users.filter(u => !u.device_1_uid || !u.device_2_uid).length} Incomplete Setup
+              </span>
+            </div>
           </div>
         </div>
       </div>

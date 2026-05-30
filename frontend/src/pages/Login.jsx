@@ -4,6 +4,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { login } from '../utils/auth';
+import logo from '../assets/logo.png';
 import { Building2, Lock, CheckCircle, AlertCircle, Fingerprint } from 'lucide-react';
 
 export default function Login() {
@@ -39,12 +40,15 @@ export default function Login() {
       {/* Login Card */}
       <div className="relative bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden">
         {/* Header Section */}
-        <div className="bg-gradient-to-r from-blue-600 to-indigo-600 px-8 py-10 text-center">
-          <div className="inline-flex items-center justify-center w-20 h-20 bg-white rounded-2xl mb-4 shadow-lg">
-            <Building2 className="w-10 h-10 text-blue-600" />
+        <div className="bg-white px-8 py-10 text-center border-b border-gray-200">
+          <div className="flex items-center justify-center mb-4">
+            <img
+              src={logo}
+              alt="MS Softwares Logo"
+              className="h-20 w-auto object-contain"
+            />
           </div>
-          <h1 className="text-3xl font-bold text-white mb-2">MS Softwares</h1>
-          <p className="text-blue-100 text-sm">Attendance Management System</p>
+          <p className="text-gray-600 text-sm font-medium">Attendance Management System</p>
         </div>
 
         {/* Form Section */}

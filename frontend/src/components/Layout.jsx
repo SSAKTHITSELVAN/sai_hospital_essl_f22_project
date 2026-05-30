@@ -5,6 +5,7 @@ import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { logout } from '../utils/auth';
 import api from '../services/api';
+import logo from '../assets/logo.png';
 import {
   LayoutDashboard,
   Users,
@@ -189,16 +190,15 @@ export default function Layout({ children }) {
       {/* Sidebar for Desktop */}
       <aside className="fixed left-0 top-0 h-full w-64 bg-white shadow-lg hidden lg:block border-r border-gray-200">
         {/* Company Header */}
-        <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-blue-600 to-indigo-600">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center">
-              <Building2 className="w-6 h-6 text-blue-600" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white">MS Softwares</h1>
-            </div>
+        <div className="p-6 border-b border-gray-200 bg-white">
+          <div className="flex items-center justify-center mb-2">
+            <img
+              src={logo}
+              alt="MS Softwares Logo"
+              className="h-16 w-auto object-contain"
+            />
           </div>
-          <p className="text-xs text-blue-100 ml-13">Attendance Management System</p>
+          <p className="text-xs text-gray-600 text-center font-medium">Attendance Management System</p>
         </div>
 
         <nav className="p-4 space-y-1">
@@ -244,17 +244,18 @@ export default function Layout({ children }) {
           <div className="absolute inset-0 bg-black bg-opacity-50" onClick={() => setSidebarOpen(false)} />
           <aside className="absolute left-0 top-0 h-full w-64 bg-white shadow-lg">
             {/* Company Header */}
-            <div className="p-6 border-b border-gray-200 bg-gradient-to-r from-blue-600 to-indigo-600 flex justify-between items-center">
-              <div>
-                <div className="flex items-center gap-3 mb-2">
-                  <div className="w-10 h-10 bg-white rounded-lg flex items-center justify-center">
-                    <Building2 className="w-6 h-6 text-blue-600" />
-                  </div>
-                  <h1 className="text-xl font-bold text-white">MS Softwares</h1>
+            <div className="p-6 border-b border-gray-200 bg-white flex justify-between items-start">
+              <div className="flex-1">
+                <div className="flex items-center justify-center mb-2">
+                  <img
+                    src={logo}
+                    alt="MS Softwares Logo"
+                    className="h-14 w-auto object-contain"
+                  />
                 </div>
-                <p className="text-xs text-blue-100 ml-13">Attendance System</p>
+                <p className="text-xs text-gray-600 text-center font-medium">Attendance System</p>
               </div>
-              <button onClick={() => setSidebarOpen(false)} className="text-white">
+              <button onClick={() => setSidebarOpen(false)} className="text-gray-600 hover:text-gray-800 ml-2">
                 <X className="w-6 h-6" />
               </button>
             </div>

@@ -132,6 +132,8 @@ async def get_all_users(
                     {
                         "id": u.id,
                         "uid": u.uid,
+                        "device_1_uid": u.device_1_uid,
+                        "device_2_uid": u.device_2_uid,
                         "name": u.name,
                         "privilege": u.privilege,
                         "card_no": u.card_no,

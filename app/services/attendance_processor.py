@@ -22,10 +22,12 @@ SHIFT DETECTION:
   • If 2 IN + 2 OUT → Break shift (with break between)
   • punch_sessions field stores JSON: [{"in": ISO, "out": ISO}, ...]
 
-STATUS CALCULATION:
-  • PRESENT:    >= 9.0 hours total work
-  • HALF_DAY:   >= 4.5 hours and < 9.0 hours
-  • INCOMPLETE: < 4.5 hours OR missing punches
+STATUS CALCULATION (Updated):
+  • If at least ONE complete session (IN + OUT) exists:
+    - PRESENT:    >= 9.0 hours total work
+    - HALF_DAY:   >= 4.5 hours and < 9.0 hours
+    - INCOMPLETE: < 4.5 hours (but has complete session)
+  • INCOMPLETE: Has IN punch but no complete session (missing OUT)
   • ABSENT:     No punches at all
 """
 
@@ -225,27 +227,36 @@ def _determine_status(
     total_hours: float,
     first_in: Optional[datetime],
     last_out: Optional[datetime],
+    sessions: List[Dict],
 ) -> AttendanceStatus:
     """
     Determine attendance status based on work hours.
 
-    Rules:
-    - PRESENT:    >= 9.0 hours
-    - HALF_DAY:   >= 4.5 hours and < 9.0 hours
-    - INCOMPLETE: < 4.5 hours OR missing IN/OUT
+    NEW Rules (Changed):
+    - If at least ONE complete session (IN + OUT) exists:
+      - PRESENT:    >= 9.0 hours
+      - HALF_DAY:   >= 4.5 hours and < 9.0 hours
+      - INCOMPLETE: < 4.5 hours but has complete session
+    - INCOMPLETE: Has IN but no complete session (no OUT yet)
     - ABSENT:     No punches (handled outside this function)
     """
     if not first_in:
         return AttendanceStatus.INCOMPLETE
 
-    if not last_out:
+    # Check if at least one session is complete (has both IN and OUT)
+    has_complete_session = any(s.get("in") and s.get("out") for s in sessions)
+
+    if not has_complete_session:
+        # Has IN punch but no complete session yet
         return AttendanceStatus.INCOMPLETE
 
+    # At least one session is complete - determine status by hours
     if total_hours >= settings.PRESENT_HOURS:
         return AttendanceStatus.PRESENT
     elif total_hours >= settings.HALF_DAY_HOURS:
         return AttendanceStatus.HALF_DAY
     else:
+        # Has complete session but less than half day hours
         return AttendanceStatus.INCOMPLETE
 
 
@@ -307,7 +318,7 @@ class AttendanceProcessor:
         first_in, last_out, total_hours, shift_type = _analyze_sessions(sessions)
 
         # Determine status
-        status = _determine_status(total_hours, first_in, last_out)
+        status = _determine_status(total_hours, first_in, last_out, sessions)
 
         # Serialize sessions to JSON
         sessions_json = json.dumps([

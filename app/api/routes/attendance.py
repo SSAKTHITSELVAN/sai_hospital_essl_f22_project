@@ -213,7 +213,8 @@ async def get_today_attendance(db: Session = Depends(get_db)):
                 "records": [
                     {
                         "uid":                 rec.uid,
-                        "name":                rec.user.name if rec.user else "Unknown",
+                        "user_name":           rec.user.name if rec.user else "Unknown",  # Changed to user_name
+                        "name":                rec.user.name if rec.user else "Unknown",  # Keep for compatibility
                         "shift":               rec.shift or "Regular",
                         "first_in":            rec.first_in.isoformat()  if rec.first_in  else None,
                         "last_out":            rec.last_out.isoformat()  if rec.last_out  else None,
@@ -221,6 +222,7 @@ async def get_today_attendance(db: Session = Depends(get_db)):
                         "work_duration_hours": rec.work_duration_hours,
                         "overtime_hours":      rec.overtime_hours or 0.0,
                         "is_finalized":        rec.is_finalized,
+                        "punch_sessions":      rec.punch_sessions,  # Add punch_sessions
                     }
                     for rec in records
                 ],

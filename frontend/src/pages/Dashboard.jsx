@@ -237,23 +237,40 @@ export default function Dashboard() {
                   return (
                     <tr key={idx} className="hover:bg-gray-50 transition-colors">
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="font-medium text-gray-900">{record.user_name || 'Unknown'}</div>
+                        <div className="flex items-center">
+                          <div className="flex-shrink-0 h-10 w-10 rounded-full bg-blue-100 flex items-center justify-center">
+                            <span className="text-blue-700 font-semibold text-sm">
+                              {record.user_name?.charAt(0).toUpperCase() || record.name?.charAt(0).toUpperCase() || '?'}
+                            </span>
+                          </div>
+                          <div className="ml-3">
+                            <div className="font-medium text-gray-900">{record.user_name || record.name || 'Unknown'}</div>
+                            <div className="text-xs text-gray-500">UID: {record.uid}</div>
+                          </div>
+                        </div>
                       </td>
                       <td className="px-6 py-4 text-sm text-gray-700">
                         {sessions.length === 0 ? (
-                          <span className="text-gray-400">-</span>
+                          <span className="text-gray-400">No sessions</span>
                         ) : (
                           <div className="space-y-1">
-                            {sessions.map((session, sidx) => (
-                              <div key={sidx} className="flex items-center gap-2">
-                                {sessions.length > 1 && (
-                                  <span className="text-xs font-medium text-gray-500">{sidx + 1}:</span>
-                                )}
-                                <span className="text-green-700">IN: {formatTime(session.in)}</span>
-                                <span className="text-gray-400">→</span>
-                                <span className="text-red-700">OUT: {formatTime(session.out)}</span>
-                              </div>
-                            ))}
+                            {sessions.map((session, sidx) => {
+                              const hasIn = session.in;
+                              const hasOut = session.out;
+                              return (
+                                <div key={sidx} className="flex items-center gap-2 text-xs">
+                                  <span className="font-semibold text-gray-600">IN-{sidx + 1}:</span>
+                                  <span className={`font-medium ${hasIn ? 'text-green-700' : 'text-gray-400'}`}>
+                                    {hasIn ? formatTime(session.in) : '--:--'}
+                                  </span>
+                                  <span className="text-gray-300">•</span>
+                                  <span className="font-semibold text-gray-600">OUT-{sidx + 1}:</span>
+                                  <span className={`font-medium ${hasOut ? 'text-red-700' : 'text-gray-400'}`}>
+                                    {hasOut ? formatTime(session.out) : '--:--'}
+                                  </span>
+                                </div>
+                              );
+                            })}
                           </div>
                         )}
                       </td>
