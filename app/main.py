@@ -226,12 +226,13 @@ import os
 
 # Direct imports - bypassing __init__.py
 from app.api.routes.users import router as users_router
-from app.api.routes.attendance import router as attendance_router  
+from app.api.routes.attendance import router as attendance_router
 from app.api.routes.device import router as device_router
 from app.api.routes.iclock import router as iclock_router
 from app.api.routes.payroll import router as payroll_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.lop import router as lop_router
+from app.api.routes.export import router as export_router
 
 settings = get_settings()
 
@@ -367,6 +368,9 @@ print("   ✓ iClock routes registered")
 
 app.include_router(auth_router, prefix="/api/v1", tags=["Auth"])
 print("   ✓ Auth routes registered")
+
+app.include_router(export_router, tags=["Export"])
+print("   ✓ Export routes registered")
 
 # Debug: Print all registered routes
 print("\n" + "="*80)

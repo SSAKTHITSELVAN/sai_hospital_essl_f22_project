@@ -57,6 +57,7 @@ class AttendanceLog(Base):
     punch_type = Column(Integer, default=0)
     status     = Column(Integer, default=0)
     device_id  = Column(String(50), nullable=True)
+    device_ip  = Column(String(50), nullable=True, index=True)  # Track which device: Device1=IN, Device2=OUT
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="attendance_logs")

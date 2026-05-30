@@ -19,7 +19,17 @@ class Settings(BaseSettings):
     DB_USER: str = "postgres"
     DB_PASS: str = "password"
 
-    # Device
+    # Device 1 (IN Device)
+    DEVICE_1_IP:      str = "192.168.1.201"
+    DEVICE_1_PORT:    int = 4370
+    DEVICE_1_TIMEOUT: int = 30
+
+    # Device 2 (OUT Device)
+    DEVICE_2_IP:      str = "192.168.1.35"
+    DEVICE_2_PORT:    int = 4370
+    DEVICE_2_TIMEOUT: int = 30
+
+    # Legacy support - maps to Device 1
     DEVICE_IP:      str = "192.168.1.201"
     DEVICE_PORT:    int = 4370
     DEVICE_TIMEOUT: int = 30

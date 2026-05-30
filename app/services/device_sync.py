@@ -1,27 +1,33 @@
 # app/services/device_sync.py
 """
-Key fixes in this version
-─────────────────────────
-1.  uid vs user_id mismatch fixed.
-    AttendanceLog.uid (FK → users.uid = slot number) was being populated with
-    device_log.user_id (enrollment ID) which can be a different value.
-    Now builds a user_id_str → uid map to always store the correct slot uid.
+Dual ESSL F22 Device Sync Service
+──────────────────────────────────────────────────────────────────────────────
 
-2.  Threading lock (_ZK_LOCK) prevents concurrent ZK connections.
-    The F22 supports only one simultaneous connection. Without the lock,
-    background sync + device-info poll + manual sync could all connect at once,
-    causing failures or data corruption.
+ARCHITECTURE:
+  • Device 1 (192.168.1.201) = IN device  → all punches treated as CHECK-IN
+  • Device 2 (192.168.1.35)  = OUT device → all punches treated as CHECK-OUT
+  • User matching: BY NAME (case-insensitive, normalized)
+    - UIDs may differ across devices, but names are unique
+  • device_ip stored in AttendanceLog to identify source
 
-3.  connect() accepts a `disable` parameter.
-    Pass disable=False for read-only operations (device info) so the fingerprint
-    scanner is NOT paused during the call.
+KEY FEATURES:
+  1. Name-based user synchronization across both devices
+  2. Unified user registry (one user record per unique name)
+  3. Device IP tracking for IN/OUT determination
+  4. Thread-safe ZK connection management (_ZK_LOCK)
+  5. Duplicate prevention
+
+FLOW:
+  1. Sync users from both devices → merge by name
+  2. Sync attendance logs from both devices → tag with device_ip
+  3. Processor reads device_ip to determine IN vs OUT
 """
 
 import threading
 from sqlalchemy.orm import Session
 from zk import ZK
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Tuple
 
 from app.models.user import User
 from app.models.attendance import AttendanceLog
@@ -31,157 +37,196 @@ from app.services.attendance_processor import AttendanceProcessor
 
 settings = get_settings()
 
-# Module-level lock — shared across all DeviceSyncService instances.
-# Ensures only ONE ZK connection exists at any point in time.
+# Module-level lock — ensures only ONE ZK connection exists at any point in time
 _ZK_LOCK = threading.Lock()
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize name for matching: strip whitespace, lowercase."""
+    return name.strip().lower()
 
 
 class DeviceSyncService:
     """
-    Service to synchronize data from ESSL F22 device.
+    Dual-device synchronization service.
+
+    Syncs users and attendance from two ESSL F22 devices:
+    - Device 1: IN device (all punches = CHECK-IN)
+    - Device 2: OUT device (all punches = CHECK-OUT)
+
     Thread-safe: uses _ZK_LOCK to prevent concurrent connections.
     """
 
     def __init__(self, db: Session):
-        self.db          = db
-        self.device_ip   = settings.DEVICE_IP
-        self.device_port = settings.DEVICE_PORT
-        self.timeout     = settings.DEVICE_TIMEOUT
-        self.zk          = ZK(
-            self.device_ip,
-            port=self.device_port,
-            timeout=self.timeout,
+        self.db = db
+
+        # Device 1 (IN device)
+        self.device_1_ip      = settings.DEVICE_1_IP
+        self.device_1_port    = settings.DEVICE_1_PORT
+        self.device_1_timeout = settings.DEVICE_1_TIMEOUT
+        self.zk_1 = ZK(
+            self.device_1_ip,
+            port=self.device_1_port,
+            timeout=self.device_1_timeout,
             password=0,
             force_udp=False,
             ommit_ping=True,
         )
-        self.conn = None
 
-    def connect(self, disable: bool = True) -> bool:
+        # Device 2 (OUT device)
+        self.device_2_ip      = settings.DEVICE_2_IP
+        self.device_2_port    = settings.DEVICE_2_PORT
+        self.device_2_timeout = settings.DEVICE_2_TIMEOUT
+        self.zk_2 = ZK(
+            self.device_2_ip,
+            port=self.device_2_port,
+            timeout=self.device_2_timeout,
+            password=0,
+            force_udp=False,
+            ommit_ping=True,
+        )
+
+        self.conn_1 = None
+        self.conn_2 = None
+
+    def connect_device(self, device_num: int, disable: bool = True) -> bool:
         """
-        Connect to the device.
+        Connect to specified device.
 
         Args:
-            disable: If True (default for sync), disable the device during operation
-                     so new punches don't interfere with data reads.
-                     Pass False for info-only calls to avoid pausing the scanner.
+            device_num: 1 or 2
+            disable: If True, disable the device during operation
         """
         try:
-            print(f"🔌 Connecting to device {self.device_ip}:{self.device_port}...")
-            self.conn = self.zk.connect()
-            if disable:
-                self.conn.disable_device()
-                print("✅ Device connected and disabled for sync")
+            if device_num == 1:
+                print(f"🔌 Connecting to Device 1 (IN) {self.device_1_ip}:{self.device_1_port}...")
+                self.conn_1 = self.zk_1.connect()
+                if disable:
+                    self.conn_1.disable_device()
+                    print("✅ Device 1 connected and disabled for sync")
+                else:
+                    print("✅ Device 1 connected (read-only, not disabled)")
             else:
-                print("✅ Device connected (read-only, not disabled)")
+                print(f"🔌 Connecting to Device 2 (OUT) {self.device_2_ip}:{self.device_2_port}...")
+                self.conn_2 = self.zk_2.connect()
+                if disable:
+                    self.conn_2.disable_device()
+                    print("✅ Device 2 connected and disabled for sync")
+                else:
+                    print("✅ Device 2 connected (read-only, not disabled)")
             return True
         except Exception as e:
-            print(f"❌ Connection failed: {e}")
-            self._log_sync_status("failed", str(e))
+            print(f"❌ Device {device_num} connection failed: {e}")
             return False
 
-    def disconnect(self):
-        if self.conn:
-            try:
-                self.conn.enable_device()
-                self.zk.disconnect()
-                print("✅ Device disconnected and re-enabled")
-            except Exception as e:
-                print(f"⚠️ Error during disconnect: {e}")
+    def disconnect_device(self, device_num: int):
+        """Disconnect specified device."""
+        try:
+            if device_num == 1 and self.conn_1:
+                self.conn_1.enable_device()
+                self.zk_1.disconnect()
+                self.conn_1 = None
+                print("✅ Device 1 disconnected and re-enabled")
+            elif device_num == 2 and self.conn_2:
+                self.conn_2.enable_device()
+                self.zk_2.disconnect()
+                self.conn_2 = None
+                print("✅ Device 2 disconnected and re-enabled")
+        except Exception as e:
+            print(f"⚠️ Error disconnecting Device {device_num}: {e}")
 
     def sync_users(self) -> Dict:
         """
-        Sync users from device to database.
+        Sync users from BOTH devices and merge by name.
 
-        Rules:
-        - Match ONLY on uid (device slot number).
-        - Same uid + same name → update fields.
-        - Same uid + different name → retire old row, create new.
-        - uid missing from DB → create.
-        - Active DB uid not on device → deactivate.
+        Logic:
+        - Fetch users from Device 1 and Device 2
+        - Merge users with same name (case-insensitive)
+        - Create/update user records in DB
+        - Store mapping from both device UIDs to DB user
+
+        Returns:
+            Dict with sync statistics
         """
         try:
-            device_users = self.conn.get_users()
-            device_uids  = {u.uid for u in device_users}
+            # Fetch users from both devices
+            device_1_users = self.conn_1.get_users() if self.conn_1 else []
+            device_2_users = self.conn_2.get_users() if self.conn_2 else []
 
-            added_count       = 0
-            updated_count     = 0
-            deactivated_count = 0
-            retired_count     = 0
+            print(f"📥 Fetched {len(device_1_users)} users from Device 1 (IN)")
+            print(f"📥 Fetched {len(device_2_users)} users from Device 2 (OUT)")
 
-            for device_user in device_users:
+            # Build name → user mapping from both devices
+            # Key: normalized name, Value: list of (device_num, device_user_obj)
+            users_by_name: Dict[str, List[Tuple[int, any]]] = {}
+
+            for device_user in device_1_users:
+                norm_name = _normalize_name(device_user.name)
+                if norm_name not in users_by_name:
+                    users_by_name[norm_name] = []
+                users_by_name[norm_name].append((1, device_user))
+
+            for device_user in device_2_users:
+                norm_name = _normalize_name(device_user.name)
+                if norm_name not in users_by_name:
+                    users_by_name[norm_name] = []
+                users_by_name[norm_name].append((2, device_user))
+
+            added_count   = 0
+            updated_count = 0
+
+            # Process each unique name
+            for norm_name, device_entries in users_by_name.items():
+                # Pick primary entry (prefer Device 1, or first entry)
+                primary_entry = next((e for e in device_entries if e[0] == 1), device_entries[0])
+                _, primary_user = primary_entry
+
+                # Check if user exists in DB by name
                 existing = self.db.query(User).filter(
-                    User.uid == device_user.uid
+                    User.name.ilike(primary_user.name)  # case-insensitive
                 ).first()
 
                 if existing:
-                    if existing.name.strip().lower() == device_user.name.strip().lower():
-                        existing.privilege   = device_user.privilege
-                        existing.password    = device_user.password
-                        existing.group_id    = device_user.group_id
-                        existing.user_id_str = str(device_user.user_id)
-                        existing.card_no     = str(device_user.card) if device_user.card else None
-                        existing.is_active   = True
-                        existing.updated_at  = datetime.utcnow()
-                        updated_count += 1
-                        print(f"✅ Updated UID {device_user.uid} — {device_user.name}")
-                    else:
-                        old_name            = existing.name
-                        existing.is_active  = False
-                        existing.name       = f"[RETIRED] {existing.name}"
-                        existing.updated_at = datetime.utcnow()
-                        retired_count += 1
-                        print(f"⚠️  Retired UID {device_user.uid} ({old_name}) → reused by {device_user.name}")
-
-                        new_user = User(
-                            uid         = device_user.uid,
-                            name        = device_user.name,
-                            privilege   = device_user.privilege,
-                            password    = device_user.password,
-                            group_id    = device_user.group_id,
-                            user_id_str = str(device_user.user_id),
-                            card_no     = str(device_user.card) if device_user.card else None,
-                            is_active   = True,
-                        )
-                        self.db.add(new_user)
-                        added_count += 1
-                        print(f"✅ Created new row for UID {device_user.uid} — {device_user.name}")
+                    # Update existing user
+                    existing.privilege   = primary_user.privilege
+                    existing.password    = primary_user.password
+                    existing.group_id    = primary_user.group_id
+                    existing.is_active   = True
+                    existing.updated_at  = datetime.utcnow()
+                    updated_count += 1
+                    print(f"✅ Updated user: {primary_user.name}")
                 else:
+                    # Create new user
+                    # Use Device 1 UID if available, else Device 2 UID
+                    primary_uid = next((e[1].uid for e in device_entries if e[0] == 1), device_entries[0][1].uid)
+
                     new_user = User(
-                        uid         = device_user.uid,
-                        name        = device_user.name,
-                        privilege   = device_user.privilege,
-                        password    = device_user.password,
-                        group_id    = device_user.group_id,
-                        user_id_str = str(device_user.user_id),
-                        card_no     = str(device_user.card) if device_user.card else None,
+                        uid         = primary_uid,
+                        name        = primary_user.name,
+                        privilege   = primary_user.privilege,
+                        password    = primary_user.password,
+                        group_id    = primary_user.group_id,
+                        user_id_str = str(primary_user.user_id),
+                        card_no     = str(primary_user.card) if primary_user.card else None,
                         is_active   = True,
                     )
                     self.db.add(new_user)
                     added_count += 1
-                    print(f"➕ Added new UID {device_user.uid} — {device_user.name}")
-
-            active_db_users = self.db.query(User).filter(User.is_active == True).all()
-            for db_user in active_db_users:
-                if db_user.uid not in device_uids:
-                    db_user.is_active  = False
-                    db_user.updated_at = datetime.utcnow()
-                    deactivated_count += 1
-                    print(f"🗑️  Deactivated UID {db_user.uid} ({db_user.name}) — removed from device")
+                    print(f"➕ Added new user: {primary_user.name}")
 
             self.db.commit()
 
             result = {
-                "total":       len(device_users),
-                "added":       added_count,
-                "updated":     updated_count,
-                "retired":     retired_count,
-                "deactivated": deactivated_count,
+                "total_unique_names": len(users_by_name),
+                "device_1_users":     len(device_1_users),
+                "device_2_users":     len(device_2_users),
+                "added":              added_count,
+                "updated":            updated_count,
             }
             print(
-                f"\n👥 Users synced — Device: {len(device_users)}, "
-                f"Added: {added_count}, Updated: {updated_count}, "
-                f"Retired: {retired_count}, Deactivated: {deactivated_count}"
+                f"\n👥 Users synced — Unique names: {len(users_by_name)}, "
+                f"Device1: {len(device_1_users)}, Device2: {len(device_2_users)}, "
+                f"Added: {added_count}, Updated: {updated_count}"
             )
             return result
 
@@ -192,80 +237,144 @@ class DeviceSyncService:
 
     def sync_attendance_logs(self) -> Dict:
         """
-        Sync raw punch logs from device to DB.
+        Sync attendance logs from BOTH devices.
 
-        FIX: Builds a user_id_str → uid map so device attendance logs
-        (which carry enrollment user_id, not slot uid) are correctly matched
-        to the users table FK (which uses slot uid).
+        Logic:
+        - Fetch attendance from Device 1 → tag with device_1_ip (IN punches)
+        - Fetch attendance from Device 2 → tag with device_2_ip (OUT punches)
+        - Match users by NAME (not UID)
+        - Store device_ip for processor to determine IN/OUT
+
+        Returns:
+            Dict with sync statistics
         """
         try:
-            logs = self.conn.get_attendance()
+            # Fetch attendance from both devices
+            logs_dev1 = self.conn_1.get_attendance() if self.conn_1 else []
+            logs_dev2 = self.conn_2.get_attendance() if self.conn_2 else []
+
+            print(f"📥 Fetched {len(logs_dev1)} logs from Device 1 (IN)")
+            print(f"📥 Fetched {len(logs_dev2)} logs from Device 2 (OUT)")
+
             new_count       = 0
             duplicate_count = 0
-            error_count     = 0
             skipped_count   = 0
+            error_count     = 0
 
-            # ── Build user_id → uid mapping ─────────────────────────────── #
-            # Device attendance logs carry device_log.user_id (the enrollment ID,
-            # stored in User.user_id_str). The AttendanceLog FK points to users.uid
-            # (the slot number). These two values CAN differ on the device.
-            # We resolve device user_id → DB uid here to avoid FK mismatches.
-            user_id_to_uid: Dict[str, int] = {}
-            for row in self.db.query(User.user_id_str, User.uid).all():
-                user_id_str, slot_uid = row[0], row[1]
-                if user_id_str:
-                    user_id_to_uid[str(user_id_str)] = slot_uid
-                # Also map uid-as-string for devices where user_id == uid
-                user_id_to_uid[str(slot_uid)] = slot_uid
+            # Build name → DB user mapping
+            name_to_user: Dict[str, User] = {}
+            for user in self.db.query(User).filter(User.is_active == True).all():
+                norm_name = _normalize_name(user.name)
+                name_to_user[norm_name] = user
 
-            for device_log in logs:
+            # Process Device 1 logs (IN device)
+            for device_log in logs_dev1:
                 try:
-                    log_user_id_str = str(device_log.user_id)
+                    # Match by name from Device 1
+                    device_1_users = self.conn_1.get_users() if self.conn_1 else []
+                    device_user = next((u for u in device_1_users if u.user_id == device_log.user_id), None)
 
-                    # Resolve to DB slot uid
-                    if log_user_id_str not in user_id_to_uid:
-                        print(f"⚠️  Skipping log — unknown user_id '{log_user_id_str}'")
+                    if not device_user:
+                        print(f"⚠️  Device 1: Unknown user_id {device_log.user_id}")
                         skipped_count += 1
                         continue
 
-                    matched_uid = user_id_to_uid[log_user_id_str]
+                    norm_name = _normalize_name(device_user.name)
+                    if norm_name not in name_to_user:
+                        print(f"⚠️  Device 1: User '{device_user.name}' not in DB")
+                        skipped_count += 1
+                        continue
+
+                    db_user = name_to_user[norm_name]
 
                     # Check for duplicate
                     existing = self.db.query(AttendanceLog).filter(
-                        AttendanceLog.uid       == matched_uid,
+                        AttendanceLog.uid       == db_user.uid,
                         AttendanceLog.timestamp == device_log.timestamp,
+                        AttendanceLog.device_ip == self.device_1_ip,
                     ).first()
 
                     if existing:
                         duplicate_count += 1
                         continue
 
+                    # Create new log with Device 1 IP
                     new_log = AttendanceLog(
-                        uid        = matched_uid,          # correct slot uid
+                        uid        = db_user.uid,
                         timestamp  = device_log.timestamp,
                         punch_type = device_log.punch,
                         status     = device_log.status,
+                        device_ip  = self.device_1_ip,  # Tag as IN device
                     )
                     self.db.add(new_log)
                     new_count += 1
 
                 except Exception as log_error:
-                    print(f"⚠️ Error processing log: {log_error}")
+                    print(f"⚠️ Device 1 log error: {log_error}")
+                    error_count += 1
+                    continue
+
+            # Process Device 2 logs (OUT device)
+            for device_log in logs_dev2:
+                try:
+                    # Match by name from Device 2
+                    device_2_users = self.conn_2.get_users() if self.conn_2 else []
+                    device_user = next((u for u in device_2_users if u.user_id == device_log.user_id), None)
+
+                    if not device_user:
+                        print(f"⚠️  Device 2: Unknown user_id {device_log.user_id}")
+                        skipped_count += 1
+                        continue
+
+                    norm_name = _normalize_name(device_user.name)
+                    if norm_name not in name_to_user:
+                        print(f"⚠️  Device 2: User '{device_user.name}' not in DB")
+                        skipped_count += 1
+                        continue
+
+                    db_user = name_to_user[norm_name]
+
+                    # Check for duplicate
+                    existing = self.db.query(AttendanceLog).filter(
+                        AttendanceLog.uid       == db_user.uid,
+                        AttendanceLog.timestamp == device_log.timestamp,
+                        AttendanceLog.device_ip == self.device_2_ip,
+                    ).first()
+
+                    if existing:
+                        duplicate_count += 1
+                        continue
+
+                    # Create new log with Device 2 IP
+                    new_log = AttendanceLog(
+                        uid        = db_user.uid,
+                        timestamp  = device_log.timestamp,
+                        punch_type = device_log.punch,
+                        status     = device_log.status,
+                        device_ip  = self.device_2_ip,  # Tag as OUT device
+                    )
+                    self.db.add(new_log)
+                    new_count += 1
+
+                except Exception as log_error:
+                    print(f"⚠️ Device 2 log error: {log_error}")
                     error_count += 1
                     continue
 
             self.db.commit()
 
             result = {
-                "total":              len(logs),
+                "total":              len(logs_dev1) + len(logs_dev2),
+                "device_1_logs":      len(logs_dev1),
+                "device_2_logs":      len(logs_dev2),
                 "new":                new_count,
                 "duplicates":         duplicate_count,
-                "skipped_unknown_uid": skipped_count,
+                "skipped_unknown":    skipped_count,
                 "errors":             error_count,
             }
             print(
-                f"📋 Logs synced — Total: {len(logs)}, New: {new_count}, "
-                f"Duplicates: {duplicate_count}, Skipped: {skipped_count}"
+                f"📋 Logs synced — Total: {len(logs_dev1) + len(logs_dev2)}, "
+                f"New: {new_count}, Duplicates: {duplicate_count}, Skipped: {skipped_count}"
             )
             return result
 
@@ -274,25 +383,37 @@ class DeviceSyncService:
             print(f"❌ Error syncing attendance logs: {e}")
             raise
 
-    def get_device_info(self) -> Dict:
+    def get_device_info(self, device_num: int) -> Dict:
+        """Get device info for specified device."""
         try:
+            conn = self.conn_1 if device_num == 1 else self.conn_2
+            device_ip = self.device_1_ip if device_num == 1 else self.device_2_ip
+            device_port = self.device_1_port if device_num == 1 else self.device_2_port
+
+            if not conn:
+                return {}
+
             return {
-                "ip":               self.device_ip,
-                "port":             self.device_port,
-                "firmware_version": self.conn.get_firmware_version(),
-                "serial_number":    self.conn.get_serialnumber(),
-                "platform":         self.conn.get_platform(),
-                "device_name":      self.conn.get_device_name(),
-                "mac_address":      self.conn.get_mac(),
+                "device_num":        device_num,
+                "device_type":       "IN Device" if device_num == 1 else "OUT Device",
+                "ip":                device_ip,
+                "port":              device_port,
+                "firmware_version":  conn.get_firmware_version(),
+                "serial_number":     conn.get_serialnumber(),
+                "platform":          conn.get_platform(),
+                "device_name":       conn.get_device_name(),
+                "mac_address":       conn.get_mac(),
             }
         except Exception as e:
-            print(f"❌ Error getting device info: {e}")
+            print(f"❌ Error getting Device {device_num} info: {e}")
             return {}
 
     def full_sync(self) -> Dict:
         """
-        Full device synchronization.
+        Full dual-device synchronization.
+
         Acquires _ZK_LOCK to prevent concurrent connections.
+        Syncs both devices sequentially.
         """
         result = {
             "status":               "success",
@@ -300,10 +421,11 @@ class DeviceSyncService:
             "users":                {},
             "logs":                 {},
             "processed_attendance": {},
-            "device_info":          {},
+            "device_1_info":        {},
+            "device_2_info":        {},
         }
 
-        # Acquire lock with timeout — don't wait forever if device is busy
+        # Acquire lock with timeout
         if not _ZK_LOCK.acquire(timeout=60):
             result["status"] = "failed"
             result["error"]  = "Device busy — another sync is in progress"
@@ -311,20 +433,36 @@ class DeviceSyncService:
             return result
 
         try:
-            if not self.connect(disable=True):
+            print("\n" + "=" * 80)
+            print("🚀 Starting DUAL DEVICE SYNC")
+            print("=" * 80)
+
+            # Connect to both devices
+            dev1_connected = self.connect_device(1, disable=True)
+            dev2_connected = self.connect_device(2, disable=True)
+
+            if not (dev1_connected or dev2_connected):
                 result["status"] = "failed"
-                result["error"]  = "Failed to connect to device"
+                result["error"]  = "Failed to connect to any device"
                 return result
 
-            result["device_info"]          = self.get_device_info()
-            result["users"]                = self.sync_users()
-            result["logs"]                 = self.sync_attendance_logs()
+            # Get device info
+            result["device_1_info"] = self.get_device_info(1)
+            result["device_2_info"] = self.get_device_info(2)
 
+            # Sync users from both devices
+            result["users"] = self.sync_users()
+
+            # Sync attendance logs from both devices
+            result["logs"] = self.sync_attendance_logs()
+
+            # Process attendance
             processor = AttendanceProcessor(self.db)
             result["processed_attendance"] = processor.process_all_pending()
 
-            self._log_sync_status("success", "Full sync completed successfully")
-            print("\n✅ Full synchronization completed successfully!")
+            self._log_sync_status("success", "Dual device sync completed successfully")
+            print("\n✅ Dual device synchronization completed successfully!")
+            print("=" * 80 + "\n")
 
         except Exception as e:
             result["status"] = "failed"
@@ -333,51 +471,76 @@ class DeviceSyncService:
             print(f"\n❌ Sync failed: {e}")
 
         finally:
-            self.disconnect()
+            self.disconnect_device(1)
+            self.disconnect_device(2)
             _ZK_LOCK.release()
 
         return result
 
     def get_info_safe(self) -> Dict:
         """
-        Read-only device info check.
-        Does NOT disable the device — safe to call frequently.
-        Acquires _ZK_LOCK to avoid concurrent connections.
-        Returns empty dict if device is busy or unreachable.
+        Read-only device info check for both devices.
+        Does NOT disable the devices — safe to call frequently.
         """
         if not _ZK_LOCK.acquire(timeout=5):
-            return {}   # device busy — return empty gracefully
+            return {}
 
         try:
-            if not self.connect(disable=False):
-                return {}
-            return self.get_device_info()
+            info = {"device_1": {}, "device_2": {}}
+
+            if self.connect_device(1, disable=False):
+                info["device_1"] = self.get_device_info(1)
+
+            if self.connect_device(2, disable=False):
+                info["device_2"] = self.get_device_info(2)
+
+            return info
         except Exception as e:
             print(f"❌ Info check failed: {e}")
             return {}
         finally:
-            self.disconnect()
+            self.disconnect_device(1)
+            self.disconnect_device(2)
             _ZK_LOCK.release()
 
     def _log_sync_status(self, status: str, message: str):
+        """Log sync status to database."""
         try:
             if len(message) > 500:
                 message = message[:497] + "..."
 
-            device = self.db.query(Device).filter(
-                Device.device_ip == self.device_ip
+            # Log for Device 1
+            device_1 = self.db.query(Device).filter(
+                Device.device_ip == self.device_1_ip
             ).first()
 
-            if not device:
-                device = Device(
-                    device_ip=self.device_ip,
-                    device_port=self.device_port,
+            if not device_1:
+                device_1 = Device(
+                    device_ip=self.device_1_ip,
+                    device_port=self.device_1_port,
                 )
-                self.db.add(device)
+                self.db.add(device_1)
 
-            device.last_sync_at      = datetime.utcnow()
-            device.last_sync_status  = status
-            device.last_sync_message = message
+            device_1.last_sync_at      = datetime.utcnow()
+            device_1.last_sync_status  = status
+            device_1.last_sync_message = message
+
+            # Log for Device 2
+            device_2 = self.db.query(Device).filter(
+                Device.device_ip == self.device_2_ip
+            ).first()
+
+            if not device_2:
+                device_2 = Device(
+                    device_ip=self.device_2_ip,
+                    device_port=self.device_2_port,
+                )
+                self.db.add(device_2)
+
+            device_2.last_sync_at      = datetime.utcnow()
+            device_2.last_sync_status  = status
+            device_2.last_sync_message = message
+
             self.db.commit()
 
         except Exception as e:
