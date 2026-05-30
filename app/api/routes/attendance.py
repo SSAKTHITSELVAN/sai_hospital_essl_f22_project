@@ -188,7 +188,7 @@ async def process_attendance(
                     "is_finalized":         result.is_finalized,
                 })
             return error_response("No attendance logs found", {"uid": uid, "date": str(target_date)})
-        stats = processor.process_all_pending()
+        stats = processor.process_all_pending(force=force)
         return success_response("Pending attendance processed", stats)
     except Exception as e:
         import traceback; traceback.print_exc()

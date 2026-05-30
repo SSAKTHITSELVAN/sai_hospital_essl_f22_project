@@ -24,6 +24,7 @@ Multi-month range:
 import json
 import calendar
 import io
+import platform
 from datetime import date, datetime
 from typing import Optional
 
@@ -44,11 +45,13 @@ router   = APIRouter(prefix="/payroll", tags=["Payroll & Reports"])
 # ── formatting helpers ────────────────────────────────────────────────────── #
 
 def _fmt_time(iso_str: Optional[str]) -> str:
-    """'2026-04-04T10:00:00' → '10:00 AM'"""
+    """'2026-04-04T10:00:00' → '10:00 AM' (cross-platform: Windows + Linux)"""
     if not iso_str:
         return "-"
     try:
-        return datetime.fromisoformat(iso_str).strftime("%-I:%M %p")
+        dt = datetime.fromisoformat(iso_str)
+        fmt = "%#I:%M %p" if platform.system() == "Windows" else "%-I:%M %p"
+        return dt.strftime(fmt)
     except Exception:
         return "-"
 
@@ -79,6 +82,15 @@ def _build_row(sno: int, user: User, rec: ProcessedAttendance) -> dict:
             sessions = json.loads(rec.punch_sessions)
         except Exception:
             pass
+
+    # Fallback for records processed before punch_sessions column was added:
+    # reconstruct a single session from first_in / last_out so time columns
+    # are never blank.
+    if not sessions and rec.first_in:
+        sessions = [{
+            "in":  rec.first_in.isoformat()  if rec.first_in  else None,
+            "out": rec.last_out.isoformat()  if rec.last_out  else None,
+        }]
 
     hours = rec.work_duration_hours or 0.0
     ot    = rec.overtime_hours      or 0.0

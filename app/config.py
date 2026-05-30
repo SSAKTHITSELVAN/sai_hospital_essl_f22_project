@@ -12,32 +12,36 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # ── Database ────────────────────────────────────────────────
+    # Database
     DB_HOST: str = "localhost"
     DB_PORT: int = 5432
     DB_NAME: str = "essl"
     DB_USER: str = "postgres"
     DB_PASS: str = "password"
 
-    # ── Device ──────────────────────────────────────────────────
+    # Device
     DEVICE_IP:      str = "192.168.1.201"
     DEVICE_PORT:    int = 4370
     DEVICE_TIMEOUT: int = 30
 
-    # ── Application ─────────────────────────────────────────────
-    APP_HOST:               str   = "0.0.0.0"
-    APP_PORT:               int   = 8000
-    SYNC_INTERVAL_MINUTES:  int   = 5
+    # Application
+    APP_HOST:              str = "0.0.0.0"
+    APP_PORT:              int = 8000
+    SYNC_INTERVAL_MINUTES: int = 5
 
-    # ── Day boundary ────────────────────────────────────────────
-    # Work-day starts at this clock time (HH:MM, 24-hour).
-    # Punches are grouped into a "logical day" that spans
-    # DAY_START_TIME today  →  DAY_START_TIME tomorrow.
-    DAY_START_TIME: str = "04:00"
+    # CRITICAL: logical day boundary
+    # Set AFTER your latest shift end time.
+    # Hospital (night shift ends ~07:00) → DAY_START_TIME=08:00
+    DAY_START_TIME: str = "08:00"
 
-    # ── Attendance thresholds ────────────────────────────────────
+    # Attendance thresholds
     PRESENT_HOURS:  float = 9.0
     HALF_DAY_HOURS: float = 4.5
+
+    # Gap-based duplicate detection (Mode B devices)
+    # Punches within this many minutes = same check-in/check-out event (duplicate swipes)
+    # Increase if your workers take very short breaks; decrease for very quick re-entry
+    MIN_BREAK_GAP_MINUTES: int = 30
 
     @property
     def database_url(self) -> str:
