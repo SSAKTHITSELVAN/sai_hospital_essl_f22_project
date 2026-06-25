@@ -190,6 +190,7 @@ class DeviceSyncService:
 
             added_count   = 0
             updated_count = 0
+            skipped_count = 0
 
             # Process each unique name
             for norm_name, user_data in users_by_name.items():
@@ -229,28 +230,42 @@ class DeviceSyncService:
                         dev_info.append(f"Dev2:UID={user_data['device_2_uid']}")
                     print(f"✅ Updated user: {primary_user.name} ({', '.join(dev_info)})")
                 else:
-                    # Create new user with both device UIDs
-                    new_user = User(
-                        uid           = primary_uid,
-                        device_1_uid  = user_data['device_1_uid'],
-                        device_2_uid  = user_data['device_2_uid'],
-                        name          = primary_user.name,
-                        privilege     = primary_user.privilege,
-                        password      = primary_user.password,
-                        group_id      = primary_user.group_id,
-                        user_id_str   = str(primary_user.user_id),
-                        card_no       = str(primary_user.card) if primary_user.card else None,
-                        is_active     = True,
-                    )
-                    self.db.add(new_user)
-                    added_count += 1
+                    # Check if UID already exists (conflict resolution)
+                    uid_conflict = self.db.query(User).filter(User.uid == primary_uid).first()
+                    
+                    if uid_conflict:
+                        # UID conflict: keep existing user, just update device UIDs
+                        print(f"⚠️  UID conflict for {primary_user.name}: UID {primary_uid} exists as {uid_conflict.name}")
+                        if user_data['device_1_uid'] and user_data['device_1_uid'] != uid_conflict.device_1_uid:
+                            uid_conflict.device_1_uid = user_data['device_1_uid']
+                        if user_data['device_2_uid'] and user_data['device_2_uid'] != uid_conflict.device_2_uid:
+                            uid_conflict.device_2_uid = user_data['device_2_uid']
+                        uid_conflict.updated_at = datetime.utcnow()
+                        updated_count += 1
+                        skipped_count += 1
+                    else:
+                        # Create new user with both device UIDs
+                        new_user = User(
+                            uid           = primary_uid,
+                            device_1_uid  = user_data['device_1_uid'],
+                            device_2_uid  = user_data['device_2_uid'],
+                            name          = primary_user.name,
+                            privilege     = primary_user.privilege,
+                            password      = primary_user.password,
+                            group_id      = primary_user.group_id,
+                            user_id_str   = str(primary_user.user_id),
+                            card_no       = str(primary_user.card) if primary_user.card else None,
+                            is_active     = True,
+                        )
+                        self.db.add(new_user)
+                        added_count += 1
 
-                    dev_info = []
-                    if user_data['device_1_uid']:
-                        dev_info.append(f"Dev1:UID={user_data['device_1_uid']}")
-                    if user_data['device_2_uid']:
-                        dev_info.append(f"Dev2:UID={user_data['device_2_uid']}")
-                    print(f"➕ Added new user: {primary_user.name} ({', '.join(dev_info)})")
+                        dev_info = []
+                        if user_data['device_1_uid']:
+                            dev_info.append(f"Dev1:UID={user_data['device_1_uid']}")
+                        if user_data['device_2_uid']:
+                            dev_info.append(f"Dev2:UID={user_data['device_2_uid']}")
+                        print(f"➕ Added new user: {primary_user.name} ({', '.join(dev_info)})")
 
             self.db.commit()
 
@@ -260,11 +275,12 @@ class DeviceSyncService:
                 "device_2_users":     len(device_2_users),
                 "added":              added_count,
                 "updated":            updated_count,
+                "skipped":            skipped_count,
             }
             print(
                 f"\n👥 Users synced — Unique names: {len(users_by_name)}, "
                 f"Device1: {len(device_1_users)}, Device2: {len(device_2_users)}, "
-                f"Added: {added_count}, Updated: {updated_count}"
+                f"Added: {added_count}, Updated: {updated_count}, Skipped: {skipped_count}"
             )
             return result
 

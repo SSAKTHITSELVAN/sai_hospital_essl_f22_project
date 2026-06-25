@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     DEVICE_1_TIMEOUT: int = 30
 
     # Device 2 (OUT Device)
-    DEVICE_2_IP:      str = "192.168.1.35"
+    DEVICE_2_IP:      str = "192.168.1.4"  # Changed from 192.168.1.35 to actual device IP
     DEVICE_2_PORT:    int = 4370
     DEVICE_2_TIMEOUT: int = 30
 
