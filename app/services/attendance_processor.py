@@ -150,6 +150,7 @@ def _pair_dual_device(
 
     # Pair IN and OUT chronologically
     sessions: List[Dict] = []
+    orphan_out_times: List[datetime] = []
     in_idx  = 0
     out_idx = 0
 
@@ -164,8 +165,9 @@ def _pair_dual_device(
                 out_idx += 1
                 break
             else:
-                # Orphan OUT before this IN - skip it
+                # Orphan OUT before this IN - preserve it for the report
                 remarks.append(f"Orphan OUT at {_fmt_time(out_times[out_idx])} — skipped")
+                orphan_out_times.append(out_times[out_idx])
                 out_idx += 1
 
         sessions.append({"in": in_time, "out": out_time})
@@ -180,6 +182,12 @@ def _pair_dual_device(
     # Note about extra punches
     if in_idx < len(in_times):
         remarks.append(f"{len(in_times) - in_idx} extra IN punches ignored (max 2 sessions)")
+
+    for orphan_out in orphan_out_times:
+        for session in sessions:
+            if session["out"] is None:
+                session["out"] = orphan_out
+                break
 
     return sessions, remarks
 
@@ -205,7 +213,7 @@ def _analyze_sessions(sessions: List[Dict]) -> Tuple[Optional[datetime], Optiona
     total_hours = 0.0
 
     for session in sessions:
-        if session["out"]:
+        if session["out"] and session["out"] > session["in"]:
             last_out = session["out"]
             duration = (session["out"] - session["in"]).total_seconds() / 3600
             total_hours += duration
@@ -306,9 +314,10 @@ class AttendanceProcessor:
             .all()
         )
 
+        # If there are no logs for the requested day, do not create a blank/absent
+        # record for the current day. This lets today's punches be processed once
+        # they arrive and avoids hiding real attendance data.
         if not logs:
-            # No punches - mark as ABSENT or skip
-            # (Usually we don't create records for absent days)
             return {"status": "no_punches", "date": target_date, "uid": uid}
 
         # Pair punches into sessions

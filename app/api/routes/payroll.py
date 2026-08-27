@@ -118,6 +118,41 @@ def _build_row(sno: int, user: User, rec: ProcessedAttendance) -> dict:
     }
 
 
+def _build_absent_row(sno: int, user: User, target_date: date) -> dict:
+    return {
+        "sno":                  sno,
+        "id":                   user.uid,
+        "employee_name":        user.name,
+        "date":                 target_date.strftime("%d.%m.%Y"),
+        "in1":                  "-",
+        "out1":                 "-",
+        "in2":                  "-",
+        "out2":                 "-",
+        "shift":                "Regular",
+        "total_duration_hours": 0.0,
+        "total_duration_label": _fmt_hours(0.0),
+        "overtime_hours":       0.0,
+        "status":               "Absent",
+        "remarks":              "No attendance record",
+    }
+
+
+def _month_rows(user: User, records: list, year: int, month: int) -> list:
+    records_by_date = {record.date: record for record in records}
+    days_in_month = calendar.monthrange(year, month)[1]
+    rows = []
+    for day in range(1, days_in_month + 1):
+        target_date = date(year, month, day)
+        record = records_by_date.get(target_date)
+        sno = day
+        rows.append(
+            _build_row(sno, user, record)
+            if record
+            else _build_absent_row(sno, user, target_date)
+        )
+    return rows
+
+
 def _month_records(db, uid: int, year: int, month: int):
     start = date(year, month, 1)
     end   = date(year, month, calendar.monthrange(year, month)[1])
@@ -133,18 +168,20 @@ def _month_records(db, uid: int, year: int, month: int):
     )
 
 
-def _month_summary(records: list) -> dict:
+def _month_summary(records: list, expected_days: Optional[int] = None) -> dict:
     total_h = sum(r.work_duration_hours or 0 for r in records)
     total_ot = sum(r.overtime_hours     or 0 for r in records)
+    total_days = expected_days if expected_days is not None else len(records)
+    missing_days = max(0, total_days - len(records))
     return {
-        "total_days":        len(records),
+        "total_days":        total_days,
         "present":           sum(1 for r in records if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.PRESENT_OT)),
         "half_day":          sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY),
         "incomplete":        sum(1 for r in records if r.status == AttendanceStatus.INCOMPLETE),
-        "absent":            sum(1 for r in records if r.status in (AttendanceStatus.ABSENT, AttendanceStatus.LOP)),
+        "absent":            sum(1 for r in records if r.status in (AttendanceStatus.ABSENT, AttendanceStatus.LOP)) + missing_days,
         "total_hours":       round(total_h,  2),
         "overtime_hours":    round(total_ot, 2),
-        "avg_hours_per_day": round(total_h / len(records), 2) if records else 0,
+        "avg_hours_per_day": round(total_h / total_days, 2) if total_days else 0,
     }
 
 
@@ -397,8 +434,8 @@ async def monthly_report(
             return error_response(f"User UID {uid} not found", {"uid": uid})
 
         records    = _month_records(db, uid, year, month)
-        rows       = [_build_row(i + 1, user, rec) for i, rec in enumerate(records)]
-        summary    = _month_summary(records)
+        rows       = _month_rows(user, records, year, month)
+        summary    = _month_summary(records, calendar.monthrange(year, month)[1])
         month_name = calendar.month_name[month]
         month_lbl  = f"{month_name} {year}"
 
@@ -453,8 +490,8 @@ async def monthly_report_all(
         all_emp = []
         for user in users:
             records = _month_records(db, user.uid, year, month)
-            rows    = [_build_row(i + 1, user, rec) for i, rec in enumerate(records)]
-            summary = _month_summary(records)
+            rows    = _month_rows(user, records, year, month)
+            summary = _month_summary(records, calendar.monthrange(year, month)[1])
             all_emp.append({
                 "employee": {"uid": user.uid, "name": user.name},
                 "summary":  summary,
@@ -543,8 +580,10 @@ async def range_report(
 
         for yr, mo in ym_pairs:
             records    = _month_records(db, uid, yr, mo)
-            rows       = [_build_row(sno + i, user, rec) for i, rec in enumerate(records)]
-            summary    = _month_summary(records)
+            rows       = _month_rows(user, records, yr, mo)
+            for i, row in enumerate(rows):
+                row["sno"] = sno + i
+            summary    = _month_summary(records, calendar.monthrange(yr, mo)[1])
             month_name = calendar.month_name[mo]
             month_lbl  = f"{month_name} {yr}"
             sno       += len(rows)

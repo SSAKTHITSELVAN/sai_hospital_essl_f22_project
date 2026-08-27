@@ -214,7 +214,8 @@ class ExcelExportService:
         # Data rows
         row = 4
         for idx, user in enumerate(users, start=1):
-            # Fetch attendance for date range
+            # Fetch attendance for date range.
+            # Use the full inclusive month range so export covers every selected day.
             attendance_records = (
                 self.db.query(ProcessedAttendance)
                 .filter(
@@ -222,6 +223,7 @@ class ExcelExportService:
                     ProcessedAttendance.date >= start_date,
                     ProcessedAttendance.date <= end_date
                 )
+                .order_by(ProcessedAttendance.date)
                 .all()
             )
 

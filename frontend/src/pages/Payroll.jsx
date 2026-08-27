@@ -6,11 +6,19 @@ import api from '../services/api';
 import { Calendar, Download, RefreshCw, Users, DollarSign } from 'lucide-react';
 
 export default function Payroll() {
-  const today = new Date().toISOString().split('T')[0];
-  const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+  const toInputDate = (date) => {
+    const y = date.getFullYear();
+    const m = `${date.getMonth() + 1}`.padStart(2, '0');
+    const d = `${date.getDate()}`.padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  };
+
+  const today = new Date();
+  const firstDayOfMonth = toInputDate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const lastDayOfMonth = toInputDate(new Date(today.getFullYear(), today.getMonth() + 1, 0));
 
   const [startDate, setStartDate] = useState(firstDayOfMonth);
-  const [endDate, setEndDate] = useState(today);
+  const [endDate, setEndDate] = useState(lastDayOfMonth);
   const [payrollData, setPayrollData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -82,10 +90,13 @@ export default function Payroll() {
   const handleExport = async () => {
     try {
       setExporting(true);
+      const exportStart = startDate || firstDayOfMonth;
+      const exportEnd = endDate || lastDayOfMonth;
+
       const response = await api.get('/api/v1/export/payroll-report', {
         params: {
-          start_date: startDate,
-          end_date: endDate
+          start_date: exportStart,
+          end_date: exportEnd
         },
         responseType: 'blob'
       });
@@ -94,7 +105,7 @@ export default function Payroll() {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', `Payroll_${startDate}_to_${endDate}.xlsx`);
+      link.setAttribute('download', `Payroll_${exportStart}_to_${exportEnd}.xlsx`);
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -107,7 +118,7 @@ export default function Payroll() {
   };
 
   const formatDate = (dateStr) => {
-    const date = new Date(dateStr);
+    const date = new Date(`${dateStr}T12:00:00`);
     return date.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',

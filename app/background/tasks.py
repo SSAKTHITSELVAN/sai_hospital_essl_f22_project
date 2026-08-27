@@ -18,7 +18,9 @@ class BackgroundSyncManager:
     """
     
     def __init__(self):
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(
+            job_defaults={"coalesce": True, "max_instances": 1}
+        )
         self.sync_interval_minutes = settings.SYNC_INTERVAL_MINUTES
     
     def sync_device_data(self):

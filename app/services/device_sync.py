@@ -206,16 +206,16 @@ class DeviceSyncService:
                 ).first()
 
                 if existing:
-                    # Update existing user with both device UIDs
+                    # Update existing user with both device UIDs.
+                    # Preserve the DB primary uid so existing attendance_logs rows
+                    # keep their foreign-key relationship intact.
                     if user_data['device_1_uid']:
                         existing.device_1_uid = user_data['device_1_uid']
                     if user_data['device_2_uid']:
                         existing.device_2_uid = user_data['device_2_uid']
 
-                    # Update primary UID if needed
-                    existing.uid = user_data['device_1_uid'] or user_data['device_2_uid']
-
-                    # Update other fields from primary user
+                    # Do not overwrite the existing primary uid here.
+                    # That would break attendance_logs -> users.uid foreign keys.
                     existing.privilege   = primary_user.privilege
                     existing.password    = primary_user.password
                     existing.group_id    = primary_user.group_id
@@ -504,19 +504,38 @@ class DeviceSyncService:
                 result["error"]  = "Failed to connect to any device"
                 return result
 
+            # If one device is reachable but the other is not, continue with the
+            # reachable device rather than aborting the whole sync.
+            if not dev1_connected and dev2_connected:
+                print("⚠️ Device 1 unavailable; continuing with Device 2 only")
+            if dev1_connected and not dev2_connected:
+                print("⚠️ Device 2 unavailable; continuing with Device 1 only")
+
             # Get device info
             result["device_1_info"] = self.get_device_info(1)
             result["device_2_info"] = self.get_device_info(2)
 
             # Sync users from both devices
-            result["users"] = self.sync_users()
+            try:
+                result["users"] = self.sync_users()
+            except Exception as exc:
+                result["users"] = {"error": str(exc)}
+                print(f"⚠️ User sync failed, continuing with log sync: {exc}")
 
             # Sync attendance logs from both devices
-            result["logs"] = self.sync_attendance_logs()
+            try:
+                result["logs"] = self.sync_attendance_logs()
+            except Exception as exc:
+                result["logs"] = {"error": str(exc)}
+                print(f"⚠️ Attendance log sync failed: {exc}")
 
             # Process attendance
             processor = AttendanceProcessor(self.db)
-            result["processed_attendance"] = processor.process_all_pending()
+            try:
+                result["processed_attendance"] = processor.process_all_pending()
+            except Exception as exc:
+                result["processed_attendance"] = {"error": str(exc)}
+                print(f"⚠️ Attendance processing failed: {exc}")
 
             self._log_sync_status("success", "Dual device sync completed successfully")
             print("\n✅ Dual device synchronization completed successfully!")
