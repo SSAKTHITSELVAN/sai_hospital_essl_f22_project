@@ -24,7 +24,7 @@ Edit `.env` file:
 DEVICE_1_IP=192.168.1.201
 
 # Device 2 - Exit Device (OUT punches)
-DEVICE_2_IP=192.168.1.35
+DEVICE_2_IP=192.168.1.4
 
 # Database
 DB_HOST=localhost

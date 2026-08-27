@@ -23,6 +23,13 @@ def _serialize_record(rec: ProcessedAttendance) -> dict:
         except Exception:
             pass
 
+    status = rec.status.value if rec.status else "absent"
+    # Keep the public API to the three employee-facing statuses.
+    if status in ("present_ot", "half_day"):
+        status = "present"
+    elif status == "lop":
+        status = "absent"
+
     return {
         "id":                    rec.id,
         "uid":                   rec.uid,
@@ -34,7 +41,7 @@ def _serialize_record(rec: ProcessedAttendance) -> dict:
         "last_out":              rec.last_out.isoformat()  if rec.last_out  else None,
         "work_duration_hours":   round(rec.work_duration_hours or 0, 2),
         "overtime_hours":        round(rec.overtime_hours      or 0, 2),
-        "status":                rec.status.value if rec.status else None,
+        "status":                status,
         "total_punches":         rec.total_punches,
         "is_finalized":          rec.is_finalized,
         "remarks":               rec.remarks,

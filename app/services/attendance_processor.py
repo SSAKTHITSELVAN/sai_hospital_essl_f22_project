@@ -5,7 +5,7 @@ Dual-Device Attendance Processor with Regular/Break Shift Support
 
 ARCHITECTURE:
   • Device 1 (192.168.1.201) → ALL punches = IN  (ignoring punch_type)
-  • Device 2 (192.168.1.35)  → ALL punches = OUT (ignoring punch_type)
+    • Device 2 (192.168.1.4)    → ALL punches = OUT (ignoring punch_type)
   • Two modes supported:
     1. REGULAR MODE:  1 IN + 1 OUT = full work session
     2. BREAK SHIFT MODE: 2 IN + 2 OUT = two sessions with break
@@ -238,15 +238,11 @@ def _determine_status(
     sessions: List[Dict],
 ) -> AttendanceStatus:
     """
-    Determine attendance status based on work hours.
+        Determine attendance status from whether both device punches exist.
 
-    NEW Rules (Changed):
-    - If at least ONE complete session (IN + OUT) exists:
-      - PRESENT:    >= 9.0 hours
-      - HALF_DAY:   >= 4.5 hours and < 9.0 hours
-      - INCOMPLETE: < 4.5 hours but has complete session
-    - INCOMPLETE: Has IN but no complete session (no OUT yet)
-    - ABSENT:     No punches (handled outside this function)
+        - PRESENT: at least one complete IN + OUT session
+        - INCOMPLETE: only IN or only OUT is available
+        - ABSENT: no punches (handled outside this function)
     """
     if not first_in:
         return AttendanceStatus.INCOMPLETE
@@ -258,14 +254,7 @@ def _determine_status(
         # Has IN punch but no complete session yet
         return AttendanceStatus.INCOMPLETE
 
-    # At least one session is complete - determine status by hours
-    if total_hours >= settings.PRESENT_HOURS:
-        return AttendanceStatus.PRESENT
-    elif total_hours >= settings.HALF_DAY_HOURS:
-        return AttendanceStatus.HALF_DAY
-    else:
-        # Has complete session but less than half day hours
-        return AttendanceStatus.INCOMPLETE
+    return AttendanceStatus.PRESENT
 
 
 # ── Main processor class ───────────────────────────────────────────────────── #
@@ -328,6 +317,32 @@ class AttendanceProcessor:
 
         # Determine status
         status = _determine_status(total_hours, first_in, last_out, sessions)
+
+        # Explain incomplete records with the punch that was actually received.
+        # This is especially important for OUT-only records, which have no
+        # session to display in the report.
+        if status == AttendanceStatus.INCOMPLETE:
+            in_logs = [log for log in logs if log.device_ip == self.device_1_ip]
+            out_logs = [log for log in logs if log.device_ip == self.device_2_ip]
+            has_complete_session = any(
+                session.get("in") and session.get("out") for session in sessions
+            )
+            if not has_complete_session:
+                if in_logs and out_logs:
+                    remarks.append(
+                        f"IN recorded at {_fmt_time(in_logs[0].timestamp)}; "
+                        f"OUT recorded at {_fmt_time(out_logs[-1].timestamp)}"
+                    )
+                elif in_logs:
+                    remarks.append(
+                        f"IN recorded at {_fmt_time(in_logs[0].timestamp)}; "
+                        "OUT not recorded"
+                    )
+                elif out_logs:
+                    remarks.append(
+                        f"OUT recorded at {_fmt_time(out_logs[-1].timestamp)}; "
+                        "IN not recorded"
+                    )
 
         # Serialize sessions to JSON
         sessions_json = json.dumps([

@@ -64,11 +64,11 @@ def _fmt_hours(h: float) -> str:
 def _status_label(status_val: str, ot: float) -> str:
     m = {
         "present":    "Present",
-        "present_ot": f"Present + {ot:.2f}h OT",
-        "half_day":   "Half Day",
+        "present_ot": "Present",
+        "half_day":   "Present",
         "incomplete": "Incomplete",
         "absent":     "Absent",
-        "lop":        "LOP",
+        "lop":        "Absent",
     }
     return m.get(status_val, status_val.title())
 
@@ -175,8 +175,8 @@ def _month_summary(records: list, expected_days: Optional[int] = None) -> dict:
     missing_days = max(0, total_days - len(records))
     return {
         "total_days":        total_days,
-        "present":           sum(1 for r in records if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.PRESENT_OT)),
-        "half_day":          sum(1 for r in records if r.status == AttendanceStatus.HALF_DAY),
+        "present":           sum(1 for r in records if r.status in (AttendanceStatus.PRESENT, AttendanceStatus.PRESENT_OT, AttendanceStatus.HALF_DAY)),
+        "half_day":          0,
         "incomplete":        sum(1 for r in records if r.status == AttendanceStatus.INCOMPLETE),
         "absent":            sum(1 for r in records if r.status in (AttendanceStatus.ABSENT, AttendanceStatus.LOP)) + missing_days,
         "total_hours":       round(total_h,  2),

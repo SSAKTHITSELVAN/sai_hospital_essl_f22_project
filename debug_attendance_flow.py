@@ -57,7 +57,7 @@ def check_raw_logs():
             print("Recent logs from today:")
             for log in logs_today[-10:]:  # Show last 10
                 user = db.query(User).filter(User.uid == log.uid).first()
-                device_type = "IN (Device 1)" if log.device_ip == "192.168.1.201" else "OUT (Device 2)" if log.device_ip == "192.168.1.35" else "UNKNOWN"
+                device_type = "IN (Device 1)" if log.device_ip == "192.168.1.201" else "OUT (Device 2)" if log.device_ip == "192.168.1.4" else "UNKNOWN"
                 print(f"  {log.timestamp} | {user.name if user else 'UNKNOWN'} | {device_type} | {log.device_ip}")
             print()
         else:
@@ -68,7 +68,7 @@ def check_raw_logs():
             AttendanceLog.device_ip == "192.168.1.201"
         ).count()
         device_2_logs = db.query(AttendanceLog).filter(
-            AttendanceLog.device_ip == "192.168.1.35"
+            AttendanceLog.device_ip == "192.168.1.4"
         ).count()
         null_device = db.query(AttendanceLog).filter(
             AttendanceLog.device_ip.is_(None)
@@ -76,7 +76,7 @@ def check_raw_logs():
         
         print(f"Device IP distribution:")
         print(f"  Device 1 (192.168.1.201): {device_1_logs} logs")
-        print(f"  Device 2 (192.168.1.35):  {device_2_logs} logs")
+        print(f"  Device 2 (192.168.1.4):   {device_2_logs} logs")
         print(f"  NULL/Unknown:             {null_device} logs")
         print()
         

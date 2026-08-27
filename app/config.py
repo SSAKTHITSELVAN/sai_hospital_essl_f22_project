@@ -41,8 +41,9 @@ class Settings(BaseSettings):
 
     # CRITICAL: logical day boundary
     # Set AFTER your latest shift end time.
-    # Hospital (night shift ends ~07:00) → DAY_START_TIME=08:00
-    DAY_START_TIME: str = "08:00"
+    # Keep early-morning arrivals (around 07:00) in the same day as their
+    # afternoon checkout while still grouping overnight punches together.
+    DAY_START_TIME: str = "04:00"
 
     # Attendance thresholds
     PRESENT_HOURS:  float = 9.0

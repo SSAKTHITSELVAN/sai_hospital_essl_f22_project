@@ -28,7 +28,7 @@ cat .env | grep DEVICE
 Should show:
 ```
 DEVICE_1_IP=192.168.1.201
-DEVICE_2_IP=192.168.1.35
+DEVICE_2_IP=192.168.1.4
 ```
 
 **Check 3: Device Status**
@@ -139,7 +139,7 @@ Session 2: IN 01:00 PM → OUT 06:00 PM
 
 For night shift workers, check `.env`:
 ```env
-DAY_START_TIME=08:00
+DAY_START_TIME=04:00
 ```
 
 If night shift ends at 7 AM, use 08:00.  

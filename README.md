@@ -40,7 +40,7 @@ DEVICE_1_IP=192.168.1.201
 DEVICE_1_PORT=4370
 
 # Device 2 - Exit/OUT Device  
-DEVICE_2_IP=192.168.1.35
+DEVICE_2_IP=192.168.1.4
 DEVICE_2_PORT=4370
 
 # Database
@@ -198,7 +198,7 @@ HALF_DAY_HOURS=4.5     # Half day threshold
 When does a new day start? (for night shifts):
 
 ```env
-DAY_START_TIME=08:00   # Day starts at 8:00 AM
+DAY_START_TIME=04:00   # Logical day starts after overnight punches
 ```
 
 ---

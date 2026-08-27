@@ -5,7 +5,7 @@ Dual ESSL F22 Device Sync Service
 
 ARCHITECTURE:
   • Device 1 (192.168.1.201) = IN device  → all punches treated as CHECK-IN
-  • Device 2 (192.168.1.35)  = OUT device → all punches treated as CHECK-OUT
+    • Device 2 (192.168.1.4)    = OUT device → all punches treated as CHECK-OUT
   • User matching: BY NAME (case-insensitive, normalized)
     - UIDs may differ across devices, but names are unique
   • device_ip stored in AttendanceLog to identify source
